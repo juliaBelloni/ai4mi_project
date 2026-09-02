@@ -78,9 +78,11 @@ def gt_transform(K, img):
         return img[0]
 
 def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
-    # Networks and scheduler
+    # Networks and scheduler + adding mps support
     gpu: bool = args.gpu and torch.cuda.is_available()
-    device = torch.device("cuda") if gpu else torch.device("cpu")
+    mps: bool = args.mps and torch.backends.mps.is_available()
+    device = torch.device("cuda") if gpu else torch.device("mps") if mps else torch.device("cpu")
+
     print(f">> Picked {device} to run experiments")
 
     K: int = datasets_params[args.dataset]['K']
@@ -242,6 +244,7 @@ def main():
                         help="Destination directory to save the results (predictions and weights).")
 
     parser.add_argument('--gpu', action='store_true')
+    parser.add_argument('--mps', action='store_true')
     parser.add_argument('--debug', action='store_true',
                         help="Keep only a fraction (10 samples) of the datasets, "
                              "to test the logics around epochs and logging easily.")
