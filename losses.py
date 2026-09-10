@@ -23,7 +23,7 @@
 # SOFTWARE.
 
 
-from torch import einsum
+from torch import einsum, Tensor
 
 from utils import simplex, sset
 
@@ -46,6 +46,38 @@ class CrossEntropy():
         loss /= mask.sum() + 1e-10
 
         return loss
+
+class DiceCE():
+    """The 'standard' loss function given during the lecture,
+    and the default in nnU-Net, combining cross-entropy
+    and dice loss, so that L = L_CE + lambda * L_DICE"""
+
+    def __init__(self, idk: list[int], lambda_: float, smooth: float = 1e-8):
+        self.idk = idk
+        self.lambda_ = lambda_
+        self.smooth = smooth
+        print(f"Initialized {self.__class__.__name__} with {idk=}, lambda = {lambda_}")
+
+    def __call__(self, pred_softmax: Tensor, weak_target: Tensor) -> Tensor:
+        assert pred_softmax.shape == weak_target.shape
+        assert simplex(pred_softmax)
+        assert sset(weak_target, [0, 1])
+
+        pred_softmax = pred_softmax[:, self.idk, ...]
+        mask = weak_target[:, self.idk, ...].float()
+
+        # Cross-entropy term
+        log_p = (pred_softmax + 1e-10).log()
+        ce_loss = - einsum("bkwh,bkwh->", mask, log_p)
+        ce_loss /= mask.sum() + 1e-10
+
+        # Soft dice term, averaged over classes and batch
+        intersection = einsum("bkwh,bkwh->bk", pred_softmax, mask)
+        union = einsum("bkwh->bk", pred_softmax) + einsum("bkwh->bk", mask)
+        dice_score = (2 * intersection + self.smooth) / (union + self.smooth)
+        dice_loss = 1 - dice_score.mean()
+
+        return ce_loss + self.lambda_ * dice_loss
 
 
 class PartialCrossEntropy(CrossEntropy):

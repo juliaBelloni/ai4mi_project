@@ -50,7 +50,7 @@ from utils import (Dcm,
                    dice_coef,
                    save_images)
 
-from losses import (CrossEntropy)
+from losses import (CrossEntropy, DiceCE)
 
 datasets_params: dict[str, dict[str, Any]] = {}
 # K for the number of classes
@@ -130,14 +130,18 @@ def runTraining(args):
     print(f">>> Setting up to train on {args.dataset} with {args.mode}")
     net, optimizer, device, train_loader, val_loader, K = setup(args)
 
+    if args.mode == "full":
+        idk = list(range(K))  # Supervise both background and foreground
+    elif args.mode in ["partial"] and args.dataset == 'SEGTHOR':
+        idk = [0, 1, 3, 4]  # Do not supervise the heart (class 2)
+    else:
+        raise ValueError(args.mode, args.dataset)
+
     if args.loss_fn == "ce":
-        if args.mode == "full":
-            loss_fn = CrossEntropy(idk=list(range(K)))  # Supervise both background and foreground
-        elif args.mode in ["partial"] and args.dataset == 'SEGTHOR':
-            loss_fn = CrossEntropy(idk=[0, 1, 3, 4])  # Do not supervise the heart (class 2)
-        else:
-            raise ValueError(args.mode, args.dataset)
-    else: 
+        loss_fn = CrossEntropy(idk=idk)
+    elif args.loss_fn == "dicece":
+        loss_fn = DiceCE(idk=idk, lambda_=args.dicece_lambda)
+    else:
         raise ValueError(f"Invalid loss function {args.loss_fn}")
 
     # Notice one has the length of the _loader_, and the other one of the _dataset_
@@ -251,7 +255,9 @@ def main():
     parser.add_argument('--debug', action='store_true',
                         help="Keep only a fraction (10 samples) of the datasets, "
                              "to test the logics around epochs and logging easily.")
-    parser.add_argument('--loss_fn', choices=["ce"], default="ce", help="Loss function used during training.")
+    parser.add_argument('--loss_fn', choices=["ce", "dicece"], default="ce", help="Loss function used during training.")
+    parser.add_argument('--dicece_lambda', default=1., type=float,
+                        help="Weight of the dice term when --loss_fn is dicece: L = L_CE + lambda * L_DICE.")
 
     args = parser.parse_args()
 
