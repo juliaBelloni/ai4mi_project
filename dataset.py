@@ -25,10 +25,14 @@
 from pathlib import Path
 from typing import Callable, Union
 
+from matplotlib import image
 from torch import Tensor
 from PIL import Image
 from torch.utils.data import Dataset
 
+import torch
+from torchvision.transforms import InterpolationMode
+from torchvision.transforms import functional as TF
 
 def make_dataset(root, subset) -> list[tuple[Path, Path | None]]:
     assert subset in ['train', 'val', 'test']
@@ -55,7 +59,7 @@ class SliceDataset(Dataset):
         self.root_dir: str = root_dir
         self.img_transform: Callable = img_transform
         self.gt_transform: Callable = gt_transform
-        self.augmentation: bool = augment
+        self.augmentation: bool = augment and subset == 'train'
         self.equalize: bool = equalize
 
         self.test_mode: bool = subset == 'test'
@@ -71,19 +75,34 @@ class SliceDataset(Dataset):
 
     def __getitem__(self, index) -> dict[str, Union[Tensor, int, str]]:
         img_path, gt_path = self.files[index]
+        with Image.open(img_path) as image:
+            img_pil = image.copy()
+        gt_pil = None
+        if not self.test_mode:
+            with Image.open(gt_path) as mask:
+                gt_pil = mask.copy()
+        if self.augmentation and torch.rand(()).item() < 0.5:
+            angle = torch.empty(()).uniform_(-5.0, 5.0).item()
 
-        img: Tensor = self.img_transform(Image.open(img_path))
+            img_pil = TF.rotate(img_pil, angle=angle, interpolation=InterpolationMode.BILINEAR, expand=False, fill=0)
+
+            gt_pil = TF.rotate(gt_pil, angle=angle, interpolation=InterpolationMode.NEAREST, expand=False, fill=0)
+        img: Tensor = self.img_transform(img_pil)
+
+        if self.augmentation and torch.rand(()).item() < 0.25:
+            noise_std = torch.empty(()).uniform_(0.0, 0.01).item()
+            noise = torch.randn_like(img) * noise_std
+            img = (img + noise).clamp(0.0, 1.0)
 
         data_dict = {"images": img,
                      "stems": img_path.stem}
 
         if not self.test_mode:
-            gt: Tensor = self.gt_transform(Image.open(gt_path))
+            gt: Tensor = self.gt_transform(gt_pil)
 
             _, W, H = img.shape
             K, _, _ = gt.shape
             assert gt.shape == (K, W, H)
 
             data_dict["gts"] = gt
-
         return data_dict

@@ -104,6 +104,7 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     train_set = SliceDataset('train',
                              root_dir,
                              img_transform=img_transform,
+                             augment=args.augment,
                              gt_transform= partial(gt_transform, K),
                              debug=args.debug)
     train_loader = DataLoader(train_set,
@@ -248,6 +249,8 @@ def main():
     parser.add_argument('--debug', action='store_true',
                         help="Keep only a fraction (10 samples) of the datasets, "
                              "to test the logics around epochs and logging easily.")
+    parser.add_argument('--augment', action='store_true',
+                        help="Turn on augmentation for the training data.")
 
     args = parser.parse_args()
 
