@@ -12,3 +12,5 @@ projects
 .vscode/
 
 slurm_*.out
+
+notebooks/
