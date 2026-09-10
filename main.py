@@ -130,12 +130,15 @@ def runTraining(args):
     print(f">>> Setting up to train on {args.dataset} with {args.mode}")
     net, optimizer, device, train_loader, val_loader, K = setup(args)
 
-    if args.mode == "full":
-        loss_fn = CrossEntropy(idk=list(range(K)))  # Supervise both background and foreground
-    elif args.mode in ["partial"] and args.dataset == 'SEGTHOR':
-        loss_fn = CrossEntropy(idk=[0, 1, 3, 4])  # Do not supervise the heart (class 2)
-    else:
-        raise ValueError(args.mode, args.dataset)
+    if args.loss_fn == "ce":
+        if args.mode == "full":
+            loss_fn = CrossEntropy(idk=list(range(K)))  # Supervise both background and foreground
+        elif args.mode in ["partial"] and args.dataset == 'SEGTHOR':
+            loss_fn = CrossEntropy(idk=[0, 1, 3, 4])  # Do not supervise the heart (class 2)
+        else:
+            raise ValueError(args.mode, args.dataset)
+    else: 
+        raise ValueError(f"Invalid loss function {args.loss_fn}")
 
     # Notice one has the length of the _loader_, and the other one of the _dataset_
     log_loss_tra: Tensor = torch.zeros((args.epochs, len(train_loader)))
@@ -248,6 +251,7 @@ def main():
     parser.add_argument('--debug', action='store_true',
                         help="Keep only a fraction (10 samples) of the datasets, "
                              "to test the logics around epochs and logging easily.")
+    parser.add_argument('--loss_fn', choices=["ce"], default="ce", help="Loss function used during training.")
 
     args = parser.parse_args()
 
