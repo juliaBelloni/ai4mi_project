@@ -108,7 +108,8 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
                              img_transform=img_transform,
                              augment=args.augment,
                              gt_transform= partial(gt_transform, K),
-                             debug=args.debug)
+                             debug=args.debug,
+                             drop_empty_slices=args.drop_empty_slices)
     train_loader = DataLoader(train_set,
                               batch_size=B,
                               num_workers=5,
@@ -237,7 +238,7 @@ def runTraining(args):
             torch.save(net.state_dict(), args.dest / "bestweights.pt")
 
 
-def ensure_smoke_data(data_dir: Path, source_dir: Path, hu_min=None, hu_max=None):
+def ensure_smoke_data(data_dir: Path, source_dir: Path, hu_min=None, hu_max=None, target_spacing=None):
     """Create smoke data only if its directory does not exist."""
     if data_dir.exists():
         print(f'Reusing smoke dataset: {data_dir}')
@@ -248,6 +249,8 @@ def ensure_smoke_data(data_dir: Path, source_dir: Path, hu_min=None, hu_max=None
                '--source_dir', str(source_dir), '--dest_dir', str(data_dir), '--test_pipeline']
     if hu_min is not None:
         command += ['--hu_min', str(hu_min), '--hu_max', str(hu_max)]
+    if target_spacing is not None:
+        command += ['--target_spacing', str(target_spacing)]
     subprocess.run(command, check=True)
 
 
@@ -268,6 +271,9 @@ def main():
                         help='Smoke preprocessing HU lower bound; requires --hu_max and a fresh --data_dir.')
     parser.add_argument('--hu_max', type=float, default=None,
                         help='Smoke preprocessing HU upper bound; requires --hu_min.')
+    parser.add_argument('--target_spacing', type=float, default=None,
+                        help='Smoke preprocessing target in-plane spacing (mm/pixel); '
+                             'requires a fresh --data_dir, same as --hu_min/--hu_max.')
     parser.add_argument('--mode', default='full', choices=['partial', 'full'])
     parser.add_argument('--dest', type=Path,
                         help='Results directory; required normally, defaults to '
@@ -280,10 +286,16 @@ def main():
                              "to test the logics around epochs and logging easily.")
     parser.add_argument('--augment', action='store_true',
                         help="Turn on augmentation for the training data.")
+    parser.add_argument('--drop_empty_slices', type=float, default=0.0,
+                        help="Fraction (0-1) of purely-background training slices to randomly "
+                             "drop (fixed seed). Default 0 keeps every slice, matching the "
+                             "baseline. Validation is never filtered.")
 
     args = parser.parse_args()
     if (args.hu_min is None) != (args.hu_max is None):
         parser.error('Supply --hu_min and --hu_max together')
+    if not (0.0 <= args.drop_empty_slices <= 1.0):
+        parser.error('--drop_empty_slices must be between 0 and 1')
     if args.hu_min is not None and not (np.isfinite(args.hu_min) and np.isfinite(args.hu_max)
                                         and args.hu_min < args.hu_max):
         parser.error('HU bounds must be finite, with --hu_min < --hu_max')
@@ -299,7 +311,8 @@ def main():
         if args.dataset == 'SEGTHOR':
             if args.data_dir is None:
                 args.data_dir = Path('data/SEGTHOR_smoke')
-            ensure_smoke_data(args.data_dir, args.source_dir, args.hu_min, args.hu_max)
+            ensure_smoke_data(args.data_dir, args.source_dir, args.hu_min, args.hu_max,
+                              args.target_spacing)
 
     pprint(args)
 

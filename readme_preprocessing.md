@@ -31,9 +31,54 @@ Use a fresh `--data_dir` when changing bounds: the simple smoke cache checks onl
 whether the directory exists. The same HU flags also work directly in `slice_segthor.py`.
 The notebook compares candidate windows; these example bounds are not automatic defaults.
 
-## Planned flag: `--target_spacing`
+## Added flag: `--target_spacing`
 
-Spacing changes are postponed while HU windowing is evaluated.
+In-plane pixel spacing (`dx`/`dy` from the CT header) varies per patient (roughly 0.9-1.4mm),
+but the baseline always resizes every patient's slice to the same fixed `--shape` pixel grid
+regardless of that native spacing — so the same pixel count covers a different physical area
+for different patients.
+
+Supply `--target_spacing` (mm per in-plane pixel) to fix this: each patient's slice is first
+resized so 1 pixel consistently represents that physical spacing, then center-cropped (or
+zero/background-padded, if smaller) to the fixed `--shape` so batching still works. Without
+the flag, behavior is unchanged from the baseline (a direct resize straight to `--shape`,
+ignoring native spacing).
+
+```bash
+python slice_segthor.py --source_dir data/segthor_part1 --dest_dir data/SEGTHOR_spacing1 \
+  --shape 256 256 --target_spacing 1.0
+```
+
+Use a fresh `--data_dir`/`--dest_dir` when changing this, same as HU windowing above — it
+changes the stored pixel content, not just how it's loaded. Also works with `--test_pipeline`
+via `python main.py --test_pipeline --target_spacing 1.0 --data_dir data/SEGTHOR_smoke_spacing1`.
+
+**Recommended value:** use the median in-plane spacing across the training patients rather
+than an arbitrary number — this is the standard approach (e.g. nnU-Net resamples to the
+dataset's median spacing by default). Per `preprocessing_params.ipynb`, that's currently
+**0.9766mm** for this dataset. No automatic detection yet; pass it explicitly.
+
+# Training-time slice filtering
+
+## Added flag: `--drop_empty_slices`
+
+Many axial slices (near the top/bottom of the chest CT stack) contain no organ of any
+class — pure background. Training on the natural, highly imbalanced distribution wastes
+gradient updates on trivially-easy all-background slices.
+
+`--drop_empty_slices FRACTION` (0-1) randomly drops that fraction of purely-empty-GT slices
+from the **training** set only, using a fixed seed for reproducibility. **Validation is never
+filtered** — it must keep every slice, including empty ones, so the reported metric still
+reflects real-world performance. Default `0` keeps every slice, matching the baseline exactly.
+
+```bash
+python main.py --dataset SEGTHOR --mode full --epochs 25 \
+    --dest results/segthor/ce_dropempty --gpu --drop_empty_slices 0.9
+```
+
+Note: this filters slices with **no organ of any class** present. It's unrelated to, and does
+not fix, individual classes (e.g. aorta) being absent from a slice that still has other organs
+present — that's a separate metric-reporting concern, not a training-data-balance one.
 
 
 # Augmentation

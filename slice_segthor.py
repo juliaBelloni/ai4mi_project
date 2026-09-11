@@ -89,8 +89,25 @@ def sanity_gt(gt, ct) -> bool:
 resize_: Callable = partial(resize, mode="constant", preserve_range=True, anti_aliasing=False)
 
 
+def center_crop_or_pad(arr: np.ndarray, shape: tuple[int, int], pad_value: int) -> np.ndarray:
+    """Center-crop (if larger) or zero/background-pad (if smaller) arr to shape."""
+    out = np.full(shape, pad_value, dtype=arr.dtype)
+
+    src_h, src_w = arr.shape
+    dst_h, dst_w = shape
+    crop_h, crop_w = min(src_h, dst_h), min(src_w, dst_w)
+
+    src_y0, src_x0 = (src_h - crop_h) // 2, (src_w - crop_w) // 2
+    dst_y0, dst_x0 = (dst_h - crop_h) // 2, (dst_w - crop_w) // 2
+
+    out[dst_y0:dst_y0 + crop_h, dst_x0:dst_x0 + crop_w] = \
+        arr[src_y0:src_y0 + crop_h, src_x0:src_x0 + crop_w]
+    return out
+
+
 def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int, int],
-                  test_mode: bool = False, hu_min=None, hu_max=None) -> tuple[float, float, float]:
+                  test_mode: bool = False, hu_min=None, hu_max=None,
+                  target_spacing=None) -> tuple[float, float, float]:
     id_path: Path = source_path / ("train" if not test_mode else "test") / id_
 
     ct_path: Path = (id_path / f"{id_}.nii.gz") if not test_mode else (source_path / "test" / f"{id_}.nii.gz")
@@ -117,9 +134,21 @@ def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int
     to_slice_ct = norm_ct
     to_slice_gt = gt
 
+    # Baseline (target_spacing=None): resize straight to `shape`, ignoring native spacing,
+    # as before. With target_spacing set: resize so 1 pixel = target_spacing mm for every
+    # patient (dx == dy per sanity_ct), then center-crop/pad to the fixed `shape` for batching.
+    if target_spacing is not None:
+        scale = dx / target_spacing
+        resize_shape = (max(1, round(x * scale)), max(1, round(y * scale)))
+    else:
+        resize_shape = shape
+
     for idz in range(z):
-        img_slice = resize_(to_slice_ct[:, :, idz], shape).astype(np.uint8)
-        gt_slice = resize_(to_slice_gt[:, :, idz], shape, order=0).astype(np.uint8)
+        img_slice = resize_(to_slice_ct[:, :, idz], resize_shape).astype(np.uint8)
+        gt_slice = resize_(to_slice_gt[:, :, idz], resize_shape, order=0).astype(np.uint8)
+        if target_spacing is not None:
+            img_slice = center_crop_or_pad(img_slice, shape, pad_value=0)
+            gt_slice = center_crop_or_pad(gt_slice, shape, pad_value=0)
         assert img_slice.shape == gt_slice.shape
         gt_slice *= 63
         assert gt_slice.dtype == np.uint8, gt_slice.dtype
@@ -196,7 +225,8 @@ def main(args: argparse.Namespace):
                                  shape=tuple(args.shape),
                                  test_mode=mode == 'test',
                                  hu_min=args.hu_min,
-                                 hu_max=args.hu_max)
+                                 hu_max=args.hu_max,
+                                 target_spacing=args.target_spacing)
         resolutions: list[tuple[float, float, float]]
         iterator = tqdm_(split_ids)
         match args.process:
@@ -223,6 +253,10 @@ def get_args() -> argparse.Namespace:
     parser.add_argument('--shape', type=int, nargs="+", default=[256, 256])
     parser.add_argument('--hu_min', type=float, default=None, help='HU window lower bound; requires --hu_max.')
     parser.add_argument('--hu_max', type=float, default=None, help='HU window upper bound; requires --hu_min.')
+    parser.add_argument('--target_spacing', type=float, default=None,
+                        help='Resample in-plane to this physical spacing (mm/pixel) before '
+                             'center-crop/pad to --shape. Default: no resampling (baseline), '
+                             'native per-patient spacing is ignored like before.')
     parser.add_argument('--retains', type=int, default=25, help="Number of retained patient for the validation data")
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--fold', type=int, default=0)
@@ -236,6 +270,9 @@ def get_args() -> argparse.Namespace:
     if args.hu_min is not None and not (np.isfinite(args.hu_min) and np.isfinite(args.hu_max)
                                         and args.hu_min < args.hu_max):
         parser.error('HU bounds must be finite, with --hu_min < --hu_max')
+    if args.target_spacing is not None and not (np.isfinite(args.target_spacing)
+                                                 and args.target_spacing > 0):
+        parser.error('--target_spacing must be a finite positive number')
     random.seed(args.seed)
 
     print(args)

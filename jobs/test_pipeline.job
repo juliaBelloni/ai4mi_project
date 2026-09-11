@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=toy2_ce
+#SBATCH --job-name=smoke_test
 #SBATCH --partition=gpu_a100
 #SBATCH --gpus=1
 #SBATCH --cpus-per-task=18
-#SBATCH --time=01:00:00
+#SBATCH --time=00:15:00
 #SBATCH --account=gpuuva084
 #SBATCH --output=slurm_%j.out
 
@@ -13,4 +13,5 @@ module load Python/3.11.3-GCCcore-12.3.0
 cd ~/ai4mi_project
 source ai4mi/bin/activate
 
-python main.py --dataset TOY2 --mode full --epochs 25 --dest results/toy2/ce --gpu
+# Fast 2-patient/1-epoch sanity check of the full pipeline before committing to a real run.
+python main.py --test_pipeline --gpu
