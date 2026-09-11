@@ -92,8 +92,14 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     net.init_weights()
     net.to(device)
 
-    lr = 0.0005
-    optimizer = torch.optim.Adam(net.parameters(), lr=lr, betas=(0.9, 0.999))
+    lr = args.lr # default is  lr = 0.0005
+        
+    if args.opt == "adam":
+        optimizer = torch.optim.Adam(net.parameters(), lr=lr, betas=(0.9, 0.999))
+    elif args.opt == "adamw":
+        optimizer = torch.optim.AdamW(net.parameters(), lr=lr, betas=(0.9, 0.999))
+    else:
+        raise ValueError(f"Invalid optimizer {args.opt}")
 
     # Dataset part
     B: int = datasets_params[args.dataset]['B']
@@ -258,7 +264,8 @@ def main():
     parser.add_argument('--loss_fn', choices=["ce", "dicece"], default="ce", help="Loss function used during training.")
     parser.add_argument('--dicece_lambda', default=1., type=float,
                         help="Weight of the dice term when --loss_fn is dicece: L = L_CE + lambda * L_DICE.")
-
+    parser.add_argument('--opt', choices=["adam", "adamw"], default="adam", help="Optimizer used during training.")
+    parser.add_argument('--lr', default=0.0005, type=float, help="Learning rate used during training.")
     args = parser.parse_args()
 
     pprint(args)
