@@ -51,6 +51,8 @@ from utils import (Dcm,
                    save_images)
 
 from losses import (CrossEntropy, DiceCE)
+import json
+import random
 
 datasets_params: dict[str, dict[str, Any]] = {}
 # K for the number of classes
@@ -59,6 +61,51 @@ datasets_params["TOY2"] = {'K': 2, 'net': shallowCNN, 'B': 2, 'kernels': 8, 'fac
 datasets_params["SEGTHOR"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
 datasets_params["SEGTHOR_CLEAN"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
 
+def set_deterministic(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+    torch.use_deterministic_algorithms(True, warn_only=True)
+    
+def seed_worker(worker_id: int) -> None:
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)    
+    
+def make_scheduler(args: argparse.Namespace, optimizer):
+    if args.scheduler == "none":
+        return None
+
+    if args.scheduler == "step":
+        return torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.scheduler_step_size, 
+                                               gamma=args.scheduler_gamma)
+
+    if args.scheduler == "plateau":
+        return torch.optim.lr_scheduler.ReduceLROnPlateau( optimizer, mode="max", 
+                factor=args.scheduler_gamma, patience=args.scheduler_patience)
+
+    if args.scheduler == "cosine":
+        t_max = args.scheduler_t_max if args.scheduler_t_max > 0 else args.epochs
+        return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=t_max)
+
+    raise ValueError(f"Invalid scheduler {args.scheduler}")
+    
+def save_config(args: argparse.Namespace) -> None:
+    args.dest.mkdir(parents=True, exist_ok=True)
+
+    payload = {key: str(value) if isinstance(value,Path) else value
+        for key, value in vars(args).items()}
+
+    with open(args.dest / "config.json", "w") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
+    
 def img_transform(img):
         img = img.convert('L')
         img = np.array(img)[np.newaxis, ...]
@@ -135,6 +182,10 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
 def runTraining(args):
     print(f">>> Setting up to train on {args.dataset} with {args.mode}")
     net, optimizer, device, train_loader, val_loader, K = setup(args)
+
+    save_config(args)
+    scheduler = make_scheduler(args, optimizer)
+    epochs_without_improvement = 0
 
     if args.mode == "full":
         idk = list(range(K))  # Supervise both background and foreground
@@ -231,10 +282,14 @@ def runTraining(args):
         np.save(args.dest / "dice_val.npy", log_dice_val)
 
         current_dice: float = log_dice_val[e, :, 1:].mean().item()
-        if current_dice > best_dice:
+        improved = current_dice > best_dice + args.early_stopping_min_delta
+
+        if improved:
             message = f">>> Improved dice at epoch {e}: {best_dice:05.3f}->{current_dice:05.3f} DSC"
             print(message)
             best_dice = current_dice
+            epochs_without_improvement = 0
+
             with open(args.dest / "best_epoch.txt", 'w') as f:
                 f.write(message)
 
@@ -245,7 +300,21 @@ def runTraining(args):
 
             torch.save(net, args.dest / "bestmodel.pkl")
             torch.save(net.state_dict(), args.dest / "bestweights.pt")
+        else:
+            epochs_without_improvement += 1
 
+        if scheduler is not None:
+            if args.scheduler == "plateau":
+                scheduler.step(current_dice)
+            else:
+                scheduler.step()
+
+            current_lr = optimizer.param_groups[0]["lr"]
+            print(f">>> Learning rate after epoch {e}: {current_lr:.3e}")
+
+        if args.early_stopping_patience > 0 and epochs_without_improvement >= args.early_stopping_patience:
+            print(f">>> Early stopping after {epochs_without_improvement} epochs without improvement")
+            break
 
 def main():
     parser = argparse.ArgumentParser()
@@ -266,8 +335,22 @@ def main():
                         help="Weight of the dice term when --loss_fn is dicece: L = L_CE + lambda * L_DICE.")
     parser.add_argument('--opt', choices=["adam", "adamw"], default="adam", help="Optimizer used during training.")
     parser.add_argument('--lr', default=0.0005, type=float, help="Learning rate used during training.")
+    parser.add_argument( '--context_slices', default=0, type=int, help="Number of neighboring slices before and after the current slice. 0 keeps 2D behavior.")
+    parser.add_argument('--scheduler', choices=["none", "step", "plateau", "cosine"], default="none", help="Learning rate scheduler.")
+    parser.add_argument('--scheduler_step_size', default=10, type=int, help="Step size for --scheduler step.")
+    parser.add_argument('--scheduler_gamma', default=0.1, type=float,help="LR decay factor for step/plateau schedulers.")
+    parser.add_argument('--scheduler_patience', default=5, type=int, help="Patience for --scheduler plateau.")
+    parser.add_argument('--scheduler_t_max', default=0, type=int, help="T_max for --scheduler cosine. 0 means use --epochs.")
+    parser.add_argument('--early_stopping_patience', default=0, type=int, help="Stop after this many epochs without validation Dice improvement. 0 disables early stopping.")
+    parser.add_argument( '--early_stopping_min_delta', default=0.0, type=float,help="Minimum validation Dice improvement needed to reset early stopping.")
+    parser.add_argument('--deterministic', action='store_true', help="Enable deterministic PyTorch/CUDA behavior and seeded DataLoader shuffling.")
+    parser.add_argument('--seed', default=0, type=int, help="Seed used when --deterministic is set.")
+
     args = parser.parse_args()
 
+    if args.deterministic:
+        set_deterministic(args.seed)
+    
     pprint(args)
 
     runTraining(args)
