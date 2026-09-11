@@ -1,9 +1,42 @@
 # Testing
 ## Added flag: `--test_pipeline`
 
-The flag takes patient 10 and 12 (creates the data if not there yet) and runs the pipeline for 1 epoch to check wether the code still runs.
+The flag uses the first two sorted patients (Patient_01 and Patient_02), creates smoke data if its directory is missing, and runs one training/validation epoch. Existing smoke directories are reused as-is.
 
-# Preprocessing and augmentation
+# Preprocessing -> USE A NEW --DATA_DIR so you actually change the data
+## Added flags: `--hu_min` and `--hu_max` -> for this dataset use -1000, 300! 
+
+Supply both flags to enable HU windowing. Without them, the original per-volume
+Min-Max normalization stays unchanged. Bounds must be finite and `hu_min < hu_max`.
+
+TorchIO `Clamp` clips CT intensities to the supplied bounds, then `RescaleIntensity`
+uses those fixed bounds (not each scan's observed extrema) to map HU to `[0, 1]`:
+
+```text
+normalized = (clip(HU, hu_min, hu_max) - hu_min) / (hu_max - hu_min)
+```
+
+The current pipeline still stores 8-bit PNG images: normalized values are multiplied
+by 255 and quantized, then divided by 255 by the training loader. Masks are unchanged.
+
+For example, test the `[-200, 300]` candidate window in one command:
+
+```bash
+python main.py --test_pipeline --hu_min -200 --hu_max 300 \
+  --data_dir data/SEGTHOR_smoke_hu_m200_300 \
+  --dest results/segthor/smoke_hu_m200_300
+```
+
+Use a fresh `--data_dir` when changing bounds: the simple smoke cache checks only
+whether the directory exists. The same HU flags also work directly in `slice_segthor.py`.
+The notebook compares candidate windows; these example bounds are not automatic defaults.
+
+## Planned flag: `--target_spacing`
+
+Spacing changes are postponed while HU windowing is evaluated.
+
+
+# Augmentation
 
 ## Added flag: `--augment`
 

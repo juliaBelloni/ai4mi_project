@@ -237,16 +237,18 @@ def runTraining(args):
             torch.save(net.state_dict(), args.dest / "bestweights.pt")
 
 
-def ensure_smoke_data(data_dir: Path, source_dir: Path):
+def ensure_smoke_data(data_dir: Path, source_dir: Path, hu_min=None, hu_max=None):
     """Create smoke data only if its directory does not exist."""
     if data_dir.exists():
         print(f'Reusing smoke dataset: {data_dir}')
         return
 
     print(f'Creating smoke dataset: {data_dir}', flush=True)
-    subprocess.run([sys.executable, str(Path(__file__).with_name('slice_segthor.py')),
-                    '--source_dir', str(source_dir), '--dest_dir', str(data_dir),
-                    '--test_pipeline'], check=True)
+    command = [sys.executable, str(Path(__file__).with_name('slice_segthor.py')),
+               '--source_dir', str(source_dir), '--dest_dir', str(data_dir), '--test_pipeline']
+    if hu_min is not None:
+        command += ['--hu_min', str(hu_min), '--hu_max', str(hu_max)]
+    subprocess.run(command, check=True)
 
 
 def main():
@@ -262,6 +264,10 @@ def main():
                              'a SEGTHOR smoke run, otherwise data/<dataset>.')
     parser.add_argument('--source_dir', type=Path, default=Path('data/segthor_part1'),
                         help='Raw SegTHOR root containing train/, used for smoke preprocessing.')
+    parser.add_argument('--hu_min', type=float, default=None,
+                        help='Smoke preprocessing HU lower bound; requires --hu_max and a fresh --data_dir.')
+    parser.add_argument('--hu_max', type=float, default=None,
+                        help='Smoke preprocessing HU upper bound; requires --hu_min.')
     parser.add_argument('--mode', default='full', choices=['partial', 'full'])
     parser.add_argument('--dest', type=Path,
                         help='Results directory; required normally, defaults to '
@@ -276,6 +282,11 @@ def main():
                         help="Turn on augmentation for the training data.")
 
     args = parser.parse_args()
+    if (args.hu_min is None) != (args.hu_max is None):
+        parser.error('Supply --hu_min and --hu_max together')
+    if args.hu_min is not None and not (np.isfinite(args.hu_min) and np.isfinite(args.hu_max)
+                                        and args.hu_min < args.hu_max):
+        parser.error('HU bounds must be finite, with --hu_min < --hu_max')
     if args.dataset is None:
         args.dataset = 'SEGTHOR' if args.test_pipeline else 'TOY2'
     if args.dest is None:
@@ -288,7 +299,7 @@ def main():
         if args.dataset == 'SEGTHOR':
             if args.data_dir is None:
                 args.data_dir = Path('data/SEGTHOR_smoke')
-            ensure_smoke_data(args.data_dir, args.source_dir)
+            ensure_smoke_data(args.data_dir, args.source_dir, args.hu_min, args.hu_max)
 
     pprint(args)
 
