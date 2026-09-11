@@ -23,6 +23,8 @@
 # SOFTWARE.
 
 import argparse
+import subprocess
+import sys
 import warnings
 from typing import Any
 from pathlib import Path
@@ -97,7 +99,7 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
 
     # Dataset part
     B: int = datasets_params[args.dataset]['B']
-    root_dir = Path("data") / args.dataset
+    root_dir = args.data_dir if args.data_dir is not None else Path("data") / args.dataset
 
 
 
@@ -235,14 +237,35 @@ def runTraining(args):
             torch.save(net.state_dict(), args.dest / "bestweights.pt")
 
 
+def ensure_smoke_data(data_dir: Path, source_dir: Path):
+    """Create smoke data only if its directory does not exist."""
+    if data_dir.exists():
+        print(f'Reusing smoke dataset: {data_dir}')
+        return
+
+    print(f'Creating smoke dataset: {data_dir}', flush=True)
+    subprocess.run([sys.executable, str(Path(__file__).with_name('slice_segthor.py')),
+                    '--source_dir', str(source_dir), '--dest_dir', str(data_dir),
+                    '--test_pipeline'], check=True)
+
+
 def main():
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--epochs', default=20, type=int)
-    parser.add_argument('--dataset', default='TOY2', choices=datasets_params.keys())
+    parser.add_argument('--test_pipeline', action='store_true',
+                        help='Run one epoch; for SEGTHOR, create or reuse the two-patient smoke dataset.')
+    parser.add_argument('--dataset', default=None, choices=datasets_params.keys(),
+                        help='Defaults to SEGTHOR with --test_pipeline, otherwise TOY2.')
+    parser.add_argument('--data_dir', type=Path, default=None,
+                        help='Processed train/val directory; defaults to data/SEGTHOR_smoke for '
+                             'a SEGTHOR smoke run, otherwise data/<dataset>.')
+    parser.add_argument('--source_dir', type=Path, default=Path('data/segthor_part1'),
+                        help='Raw SegTHOR root containing train/, used for smoke preprocessing.')
     parser.add_argument('--mode', default='full', choices=['partial', 'full'])
-    parser.add_argument('--dest', type=Path, required=True,
-                        help="Destination directory to save the results (predictions and weights).")
+    parser.add_argument('--dest', type=Path,
+                        help='Results directory; required normally, defaults to '
+                             'results/<dataset>/smoke_run with --test_pipeline.')
 
     parser.add_argument('--gpu', action='store_true')
     parser.add_argument('--mps', action='store_true')
@@ -253,6 +276,19 @@ def main():
                         help="Turn on augmentation for the training data.")
 
     args = parser.parse_args()
+    if args.dataset is None:
+        args.dataset = 'SEGTHOR' if args.test_pipeline else 'TOY2'
+    if args.dest is None:
+        if not args.test_pipeline:
+            parser.error('--dest is required unless --test_pipeline is set')
+        args.dest = Path('results') / args.dataset.lower() / 'smoke_run'
+    if args.test_pipeline:
+        args.epochs = 1
+        print('Smoke run: one training/validation epoch (--epochs is overridden).')
+        if args.dataset == 'SEGTHOR':
+            if args.data_dir is None:
+                args.data_dir = Path('data/SEGTHOR_smoke')
+            ensure_smoke_data(args.data_dir, args.source_dir)
 
     pprint(args)
 

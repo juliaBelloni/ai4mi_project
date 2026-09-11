@@ -1,4 +1,4 @@
-#!/usr/bin/env python3.7
+#!/usr/bin/env python3
 
 # MIT License
 
@@ -167,7 +167,12 @@ def main(args: argparse.Namespace):
     training_ids: list[str]
     validation_ids: list[str]
     test_ids: list[str]
-    training_ids, validation_ids, test_ids = get_splits(src_path, args.retains, args.fold)
+    if args.test_pipeline:
+        ids = sorted(p.name for p in (src_path / 'train').glob('Patient_*')
+                     if p.is_dir())
+        training_ids, validation_ids = [ids[0]], [ids[1]]
+    else:
+        training_ids, validation_ids, test_ids = get_splits(src_path, args.retains, args.fold)
 
     resolution_dict: dict[str, tuple[float, float, float]] = {}
 
@@ -208,6 +213,8 @@ def get_args() -> argparse.Namespace:
     parser.add_argument('--retains', type=int, default=25, help="Number of retained patient for the validation data")
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--fold', type=int, default=0)
+    parser.add_argument('--test_pipeline', action='store_true',
+                        help='Use the first two patients for a smoke run.')
     parser.add_argument('--process', '-p', type=int, default=1,
                         help="The number of cores to use for processing")
     args = parser.parse_args()
