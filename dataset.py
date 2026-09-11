@@ -28,6 +28,7 @@ from typing import Callable, Union
 from torch import Tensor
 from PIL import Image
 from torch.utils.data import Dataset
+import torch 
 
 
 def make_dataset(root, subset) -> list[tuple[Path, Path | None]]:
@@ -51,19 +52,26 @@ def make_dataset(root, subset) -> list[tuple[Path, Path | None]]:
 
 class SliceDataset(Dataset):
     def __init__(self, subset, root_dir, img_transform=None,
-                 gt_transform=None, augment=False, equalize=False, debug=False):
+             gt_transform=None, augment=False, equalize=False, debug=False,
+             context_slices=0):
         self.root_dir: str = root_dir
         self.img_transform: Callable = img_transform
         self.gt_transform: Callable = gt_transform
         self.augmentation: bool = augment
         self.equalize: bool = equalize
+        self.context_slices: int = context_slices
+        assert self.context_slices >= 0
 
         self.test_mode: bool = subset == 'test'
 
         self.files = make_dataset(root_dir, subset)
         if debug:
             self.files = self.files[:10]
-
+        self.img_by_stem = {
+            img_path.stem: img_path
+            for img_path, _ in self.files
+        }
+        
         print(f">> Created {subset} dataset with {len(self)} images...")
 
     def __len__(self):
@@ -72,8 +80,16 @@ class SliceDataset(Dataset):
     def __getitem__(self, index) -> dict[str, Union[Tensor, int, str]]:
         img_path, gt_path = self.files[index]
 
-        img: Tensor = self.img_transform(Image.open(img_path))
+        if self.context_slices == 0:
+            img: Tensor = self.img_transform(Image.open(img_path))
+        else:
+            neighbor_imgs = []
+            for offset in range(-self.context_slices, self.context_slices + 1):
+                neighbor_path = self._neighbor_img_path(img_path, offset)
+                neighbor_imgs.append(self.img_transform(Image.open(neighbor_path)))
 
+            img = torch.cat(neighbor_imgs, dim=0)
+    
         data_dict = {"images": img,
                      "stems": img_path.stem}
 
@@ -87,3 +103,25 @@ class SliceDataset(Dataset):
             data_dict["gts"] = gt
 
         return data_dict
+    
+    def _neighbor_img_path(self, img_path: Path, offset: int) -> Path:
+        if offset == 0: return img_path
+
+        stem = img_path.stem
+
+        if "_" in stem:
+            prefix, index = stem.rsplit("_", 1)
+            separator = "_"
+        else:
+            prefix, index = "", stem
+            separator = ""
+
+        if not index.isdigit(): return img_path
+
+        z = int(index)
+        neighbor_z = z + offset
+        
+        if neighbor_z < 0: return img_path
+
+        neighbor_stem = f"{prefix}{separator}{neighbor_z:0{len(index)}d}"
+        return self.img_by_stem.get(neighbor_stem, img_path)

@@ -30,6 +30,7 @@ from pprint import pprint
 from operator import itemgetter
 from shutil import copytree, rmtree
 
+from sympy import factor
 import torch
 import numpy as np
 import torch.nn.functional as F
@@ -135,7 +136,8 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     K: int = datasets_params[args.dataset]['K']
     kernels: int = datasets_params[args.dataset]['kernels'] if 'kernels' in datasets_params[args.dataset] else 8
     factor: int = datasets_params[args.dataset]['factor'] if 'factor' in datasets_params[args.dataset] else 2
-    net = datasets_params[args.dataset]['net'](1, K, kernels=kernels, factor=factor)
+    in_channels = 2 * args.context_slices + 1
+    net = datasets_params[args.dataset]['net'](in_channels, K, kernels=kernels, factor=factor)
     net.init_weights()
     net.to(device)
 
@@ -152,27 +154,40 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     B: int = datasets_params[args.dataset]['B']
     root_dir = Path("data") / args.dataset
 
+    generator = None
+    worker_init_fn = None
+    if args.deterministic:
+        generator = torch.Generator()
+        generator.manual_seed(args.seed)
+        worker_init_fn = seed_worker
 
-
-    train_set = SliceDataset('train',
-                             root_dir,
-                             img_transform=img_transform,
-                             gt_transform= partial(gt_transform, K),
-                             debug=args.debug)
+    train_set = SliceDataset(
+        'train',
+        root_dir,
+        img_transform=img_transform,
+        gt_transform=partial(gt_transform, K),
+        debug=args.debug,
+        context_slices=args.context_slices)
     train_loader = DataLoader(train_set,
                               batch_size=B,
                               num_workers=5,
-                              shuffle=True)
+                              shuffle=True,
+                              worker_init_fn=worker_init_fn,
+                              generator=generator)
 
-    val_set = SliceDataset('val',
-                           root_dir,
-                           img_transform=img_transform,
-                           gt_transform=partial(gt_transform, K),
-                           debug=args.debug)
+    val_set = SliceDataset(
+        'val',
+        root_dir,
+        img_transform=img_transform,
+        gt_transform=partial(gt_transform, K),
+        debug=args.debug,
+        context_slices=args.context_slices)
     val_loader = DataLoader(val_set,
                             batch_size=B,
                             num_workers=5,
-                            shuffle=False)
+                            shuffle=False,
+                            worker_init_fn=worker_init_fn,
+                            generator=generator)
 
     args.dest.mkdir(parents=True, exist_ok=True)
 
