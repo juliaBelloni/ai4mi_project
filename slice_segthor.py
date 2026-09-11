@@ -39,8 +39,17 @@ from skimage.transform import resize
 from utils import map_, tqdm_
 
 
-def norm_arr(img: np.ndarray) -> np.ndarray:
+def norm_arr(img: np.ndarray, hu_min=None, hu_max=None) -> np.ndarray:
     casted = img.astype(np.float32)
+    if hu_min is not None:
+        import torchio as tio
+
+        image = tio.ScalarImage(tensor=casted[None])
+        image = tio.Clamp(out_min=hu_min, out_max=hu_max)(image)
+        image = tio.RescaleIntensity(out_min_max=(0, 1), in_min_max=(hu_min, hu_max))(image)
+        # Keep the existing PNG format; the loader divides by 255 during training.
+        return (255 * image.data[0].numpy()).astype(np.uint8)
+
     shifted = casted - casted.min()
     norm = shifted / shifted.max()
     res = 255 * norm
@@ -81,7 +90,7 @@ resize_: Callable = partial(resize, mode="constant", preserve_range=True, anti_a
 
 
 def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int, int],
-                  test_mode: bool = False) -> tuple[float, float, float]:
+                  test_mode: bool = False, hu_min=None, hu_max=None) -> tuple[float, float, float]:
     id_path: Path = source_path / ("train" if not test_mode else "test") / id_
 
     ct_path: Path = (id_path / f"{id_}.nii.gz") if not test_mode else (source_path / "test" / f"{id_}.nii.gz")
@@ -103,7 +112,7 @@ def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int
     else:
         gt = np.zeros_like(ct, dtype=np.uint8)
 
-    norm_ct: np.ndarray = norm_arr(ct)
+    norm_ct: np.ndarray = norm_arr(ct, hu_min, hu_max)
 
     to_slice_ct = norm_ct
     to_slice_gt = gt
@@ -185,7 +194,9 @@ def main(args: argparse.Namespace):
                                  dest_path=dest_mode,
                                  source_path=src_path,
                                  shape=tuple(args.shape),
-                                 test_mode=mode == 'test')
+                                 test_mode=mode == 'test',
+                                 hu_min=args.hu_min,
+                                 hu_max=args.hu_max)
         resolutions: list[tuple[float, float, float]]
         iterator = tqdm_(split_ids)
         match args.process:
@@ -210,6 +221,8 @@ def get_args() -> argparse.Namespace:
     parser.add_argument('--dest_dir', type=str, required=True)
 
     parser.add_argument('--shape', type=int, nargs="+", default=[256, 256])
+    parser.add_argument('--hu_min', type=float, default=None, help='HU window lower bound; requires --hu_max.')
+    parser.add_argument('--hu_max', type=float, default=None, help='HU window upper bound; requires --hu_min.')
     parser.add_argument('--retains', type=int, default=25, help="Number of retained patient for the validation data")
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--fold', type=int, default=0)
@@ -218,6 +231,11 @@ def get_args() -> argparse.Namespace:
     parser.add_argument('--process', '-p', type=int, default=1,
                         help="The number of cores to use for processing")
     args = parser.parse_args()
+    if (args.hu_min is None) != (args.hu_max is None):
+        parser.error('Supply --hu_min and --hu_max together')
+    if args.hu_min is not None and not (np.isfinite(args.hu_min) and np.isfinite(args.hu_max)
+                                        and args.hu_min < args.hu_max):
+        parser.error('HU bounds must be finite, with --hu_min < --hu_max')
     random.seed(args.seed)
 
     print(args)
