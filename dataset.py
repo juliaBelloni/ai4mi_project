@@ -22,9 +22,11 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+import random
 from pathlib import Path
 from typing import Callable, Union
 
+import numpy as np
 from matplotlib import image
 from torch import Tensor
 from PIL import Image
@@ -53,9 +55,33 @@ def make_dataset(root, subset) -> list[tuple[Path, Path | None]]:
     return list(zip(images, full_labels))
 
 
+def _is_empty_gt(gt_path: Path) -> bool:
+    return not np.asarray(Image.open(gt_path)).any()
+
+
+def _drop_empty_gt_slices(files: list[tuple[Path, Path | None]],
+                          drop_fraction: float) -> list[tuple[Path, Path | None]]:
+    """Randomly drop a fraction of purely-background (empty) GT slices, with a fixed seed."""
+    assert 0.0 <= drop_fraction <= 1.0, drop_fraction
+
+    empty: list[tuple[Path, Path | None]] = []
+    non_empty: list[tuple[Path, Path | None]] = []
+    for pair in files:
+        _, gt_path = pair
+        (empty if _is_empty_gt(gt_path) else non_empty).append(pair)
+
+    keep_n = round(len(empty) * (1 - drop_fraction))
+    kept_empty = random.Random(0).sample(empty, keep_n)
+
+    kept = non_empty + kept_empty
+    kept.sort(key=lambda pair: pair[0])
+    return kept
+
+
 class SliceDataset(Dataset):
     def __init__(self, subset, root_dir, img_transform=None,
-                 gt_transform=None, augment=False, equalize=False, debug=False):
+                 gt_transform=None, augment=False, equalize=False, debug=False,
+                 drop_empty_slices: float = 0.0):
         self.root_dir: str = root_dir
         self.img_transform: Callable = img_transform
         self.gt_transform: Callable = gt_transform
@@ -65,6 +91,8 @@ class SliceDataset(Dataset):
         self.test_mode: bool = subset == 'test'
 
         self.files = make_dataset(root_dir, subset)
+        if drop_empty_slices and subset == 'train':
+            self.files = _drop_empty_gt_slices(self.files, drop_empty_slices)
         if debug:
             self.files = self.files[:10]
 
