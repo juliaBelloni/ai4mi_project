@@ -1,3 +1,8 @@
+# Testing
+## Added flag: `--test_pipeline`
+
+The flag takes patient 10 and 12 (creates the data if not there yet) and runs the pipeline for 1 epoch to check wether the code still runs.
+
 # Preprocessing and augmentation
 
 ## Added flag: `--augment`
