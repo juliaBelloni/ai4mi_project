@@ -41,7 +41,7 @@ def main() -> None:
     for patient_dir in patient_dirs:
         ct_path = patient_dir / f'{patient_dir.name}.nii.gz'
         dx, dy, dz = nib.load(str(ct_path)).header.get_zooms()[:3]
-        rows.append({'patient': patient_dir.name, 'x': dx, 'y': dy, 'z': dz})
+        rows.append({'patient': patient_dir.name, 'x': float(dx), 'y': float(dy), 'z': float(dz)})
 
     axes = ['x', 'y', 'z']
     spacings = {axis: np.array([row[axis] for row in rows], dtype=np.float64) for axis in axes}
