@@ -51,7 +51,7 @@ from utils import (Dcm,
                    dice_coef,
                    save_images)
 
-from losses import (CrossEntropy, DiceCE)
+from losses import (CrossEntropy, Dice, DiceCE)
 import json
 import random
 
@@ -225,6 +225,8 @@ def runTraining(args):
 
     if args.loss_fn == "ce":
         loss_fn = CrossEntropy(idk=idk, weight=ce_weights)
+    elif args.loss_fn == "dice":
+        loss_fn = Dice(idk=idk)
     elif args.loss_fn == "dicece":
         loss_fn = DiceCE(idk=idk, lambda_=args.dicece_lambda, weight=ce_weights)
     else:
@@ -359,9 +361,10 @@ def main():
     parser.add_argument('--debug', action='store_true',
                         help="Keep only a fraction (10 samples) of the datasets, "
                              "to test the logics around epochs and logging easily.")
-    parser.add_argument('--loss_fn', choices=["ce", "dicece"], default="ce", help="Loss function used during training.")
-    parser.add_argument('--dicece_lambda', default=1., type=float,
-                        help="Weight of the dice term when --loss_fn is dicece: L = L_CE + lambda * L_DICE.")
+    parser.add_argument('--loss_fn', choices=["ce", "dice", "dicece"], default="ce", help="Loss function used during training.")
+    parser.add_argument('--dicece_lambda', default=0.5, type=float,
+                        help="Weight of the dice term when --loss_fn is dicece, in [0, 1]: "
+                             "L = (1 - dicece_lambda) * L_CE + dicece_lambda * L_DICE.")
     parser.add_argument('--ce_weights', default=None, type=str,
                         help="Per-class weights for the CE term (applies to --loss_fn ce and dicece). Either "
                              "comma-separated floats matching the supervised classes, e.g. '0.5,1,1,2,3', or "

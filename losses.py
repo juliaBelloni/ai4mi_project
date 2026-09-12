@@ -33,7 +33,7 @@ class CrossEntropy():
     def __init__(self, idk: list[int], weight: list[float] | None = None):
         # Self.idk is used to filter out some classes of the target mask. Use fancy indexing
         self.idk = idk
-        # Class weight for the CE term, in the same order as idk. Defaults to uniform.
+        # Class weight for the CE term, in the same order as idk. Defaults to ones.
         weight = weight if weight is not None else [1.] * len(idk)
         assert len(weight) == len(idk)
         self.weight = Tensor(weight)
@@ -53,35 +53,45 @@ class CrossEntropy():
 
         return loss
 
-class DiceCE():
-    """The 'standard' loss function given during the lecture,
-    and the default in nnU-Net, combining cross-entropy
-    and dice loss, so that L = L_CE + lambda * L_DICE"""
-
-    def __init__(self, idk: list[int], lambda_: float, smooth: float = 1e-8, weight: list[float] | None = None):
+class Dice():
+    """Standard DICE loss."""
+    def __init__(self, idk: list[int], smooth: float = 1e-8):
         self.idk = idk
-        self.lambda_ = lambda_
         self.smooth = smooth
-        self.ce = CrossEntropy(idk=idk, weight=weight)
-        print(f"Initialized {self.__class__.__name__} with {idk=}, lambda = {lambda_}")
+        print(f"Initialized {self.__class__.__name__} with {idk=}")
 
     def __call__(self, pred_softmax: Tensor, weak_target: Tensor) -> Tensor:
         assert pred_softmax.shape == weak_target.shape
         assert simplex(pred_softmax)
         assert sset(weak_target, [0, 1])
 
-        ce_loss = self.ce(pred_softmax, weak_target)
-
         pred_softmax = pred_softmax[:, self.idk, ...]
         mask = weak_target[:, self.idk, ...].float()
 
-        # Soft dice term, averaged over classes and batch (unweighted)
         intersection = einsum("bkwh,bkwh->bk", pred_softmax, mask)
         union = einsum("bkwh->bk", pred_softmax) + einsum("bkwh->bk", mask)
         dice_score = (2 * intersection + self.smooth) / (union + self.smooth)
-        dice_loss = 1 - dice_score.mean()
 
-        return ce_loss + self.lambda_ * dice_loss
+        return 1 - dice_score.mean()
+
+
+class DiceCE():
+    """The 'standard' loss function given during the lecture,
+    and the default in nnU-Net, combining cross-entropy and
+    dice loss, so that L = (1 - lambda) * L_CE + lambda * L_DICE."""
+
+    def __init__(self, idk: list[int], lambda_: float, smooth: float = 1e-8, weight: list[float] | None = None):
+        self.idk = idk
+        self.lambda_ = lambda_
+        self.ce = CrossEntropy(idk=idk, weight=weight)
+        self.dice = Dice(idk=idk, smooth=smooth)
+        print(f"Initialized {self.__class__.__name__} with {idk=}, lambda = {lambda_}")
+
+    def __call__(self, pred_softmax: Tensor, weak_target: Tensor) -> Tensor:
+        ce_loss = self.ce(pred_softmax, weak_target)
+        dice_loss = self.dice(pred_softmax, weak_target)
+
+        return (1 - self.lambda_) * ce_loss + self.lambda_ * dice_loss
 
 
 class PartialCrossEntropy(CrossEntropy):
