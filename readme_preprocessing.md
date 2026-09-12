@@ -58,6 +58,50 @@ than an arbitrary number — this is the standard approach (e.g. nnU-Net resampl
 dataset's median spacing by default). Per `preprocessing_params.ipynb`, that's currently
 **0.9766mm** for this dataset. No automatic detection yet; pass it explicitly.
 
+# Data correction
+
+## Added flag: `--fix_aorta_esophagus`
+
+`GT.nii.gz` merges the aorta into the esophagus label (`1`) instead of using its own
+label (`4`), for every patient checked. Confirmed three ways: raw label values in
+`GT.nii.gz` never include `4`; a leftover corrected annotation for `Patient_07`
+(`GT2.nii.gz`) shows the same voxels correctly split as `1`/`4`; and the original
+SegTHOR challenge lists aorta as one of its 4 target organs (`readme.md`), so this
+is a data bug in how this course's copy was packaged, not an intentional 4-class
+dataset. Reported to the course; fix it before training regardless of the cause.
+
+Splits them apart using shape alone, no CT intensity needed: the aorta is much
+thicker than the esophagus, so eroding the merged region by a few voxels leaves
+only the aorta's core; dilating that core back (clipped to the original merged
+region) recovers its full extent. Small leftover islands on either side are
+reassigned to the other class, since both the real esophagus and the real aorta
+are each a single connected tube. See `split_merged_aorta_esophagus()` in
+`slice_segthor.py` for the exact steps.
+
+Validated against `Patient_07`'s known-correct split (`GT2.nii.gz`, the only
+patient with a ground-truth answer): **0.99 aorta Dice, 0.97 esophagus Dice**.
+Also tried and rejected as worse or unnecessarily complex: pure HU-intensity
+thresholding (aorta and esophagus overlap too much in raw intensity to separate
+this way), watershed and random-walker variants (both plateaued below plain
+erosion/dilation even after tuning), and a per-voxel geometry classifier trained
+against heart/trachea position (matched this method's accuracy but added a
+training dependency and per-patient classifier for no accuracy gain once the
+same island cleanup was applied to the simpler method).
+
+```bash
+python slice_segthor.py --source_dir data/segthor_part1 --dest_dir data/SEGTHOR_fixed \
+  --shape 256 256 --fix_aorta_esophagus
+```
+
+Use a fresh `--data_dir`/`--dest_dir` when enabling this, same as HU windowing and
+`--target_spacing` above — it changes the stored pixel content, not just how it's
+loaded. Also works with `--test_pipeline` via
+`python main.py --test_pipeline --fix_aorta_esophagus --data_dir data/SEGTHOR_smoke_fixed`.
+
+Known limitation: one patient (`Patient_03`) is a genuine outlier where this
+shape-only method underperforms relative to the others checked — worth a manual
+look before trusting it blindly on every patient.
+
 # Training-time slice filtering
 
 ## Added flag: `--drop_empty_slices`
