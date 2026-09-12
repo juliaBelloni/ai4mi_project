@@ -238,7 +238,8 @@ def runTraining(args):
             torch.save(net.state_dict(), args.dest / "bestweights.pt")
 
 
-def ensure_smoke_data(data_dir: Path, source_dir: Path, hu_min=None, hu_max=None, target_spacing=None):
+def ensure_smoke_data(data_dir: Path, source_dir: Path, hu_min=None, hu_max=None,
+                      target_spacing=None, fix_aorta_esophagus=False):
     """Create smoke data only if its directory does not exist."""
     if data_dir.exists():
         print(f'Reusing smoke dataset: {data_dir}')
@@ -251,6 +252,8 @@ def ensure_smoke_data(data_dir: Path, source_dir: Path, hu_min=None, hu_max=None
         command += ['--hu_min', str(hu_min), '--hu_max', str(hu_max)]
     if target_spacing is not None:
         command += ['--target_spacing', str(target_spacing)]
+    if fix_aorta_esophagus:
+        command += ['--fix_aorta_esophagus']
     subprocess.run(command, check=True)
 
 
@@ -274,6 +277,9 @@ def main():
     parser.add_argument('--target_spacing', type=float, default=None,
                         help='Smoke preprocessing target in-plane spacing (mm/pixel); '
                              'requires a fresh --data_dir, same as --hu_min/--hu_max.')
+    parser.add_argument('--fix_aorta_esophagus', action='store_true',
+                        help='Smoke preprocessing: split the merged aorta/esophagus label. '
+                             'Default off; requires a fresh --data_dir, same as --hu_min/--hu_max.')
     parser.add_argument('--mode', default='full', choices=['partial', 'full'])
     parser.add_argument('--dest', type=Path,
                         help='Results directory; required normally, defaults to '
@@ -312,7 +318,7 @@ def main():
             if args.data_dir is None:
                 args.data_dir = Path('data/SEGTHOR_smoke')
             ensure_smoke_data(args.data_dir, args.source_dir, args.hu_min, args.hu_max,
-                              args.target_spacing)
+                              args.target_spacing, args.fix_aorta_esophagus)
 
     pprint(args)
 

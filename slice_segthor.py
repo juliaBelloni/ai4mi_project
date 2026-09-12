@@ -33,6 +33,7 @@ from typing import Callable
 
 import numpy as np
 import nibabel as nib
+from scipy import ndimage
 from skimage.io import imsave
 from skimage.transform import resize
 
@@ -105,9 +106,54 @@ def center_crop_or_pad(arr: np.ndarray, shape: tuple[int, int], pad_value: int) 
     return out
 
 
+def keep_largest_component(mask: np.ndarray) -> np.ndarray:
+    labeled, n = ndimage.label(mask, structure=np.ones((3, 3, 3)))
+    if n == 0:
+        return mask
+    sizes = ndimage.sum(mask, labeled, range(1, n + 1))
+    return labeled == (int(np.argmax(sizes)) + 1)
+
+
+def split_merged_aorta_esophagus(gt: np.ndarray, r: int = 4) -> np.ndarray:
+    """Some GT.nii.gz files merge the aorta into the esophagus label (1) instead of
+    its own label (4) -- confirmed via a leftover corrected annotation for Patient_07
+    (GT2.nii.gz) and the original SegTHOR challenge listing aorta as one of its 4
+    target organs. Splits them apart using shape alone: the aorta is much thicker
+    than the esophagus, so eroding by r voxels leaves only the aorta's core; dilating
+    that core back (clipped to the original merged region) recovers its full extent.
+    Small leftover islands on either side are reassigned to the other class, since
+    both the real esophagus and the real aorta are each a single connected tube.
+    Validated at 0.99 aorta Dice against Patient_07's known-correct split.
+    """
+    combined_mask = gt == 1
+    if not combined_mask.any():
+        return gt
+
+    coords = np.argwhere(combined_mask)
+    pad = 8
+    lo = np.maximum(coords.min(axis=0) - pad, 0)
+    hi = np.minimum(coords.max(axis=0) + pad + 1, combined_mask.shape)
+    sl = tuple(slice(l, h) for l, h in zip(lo, hi))
+    mask_c = combined_mask[sl]
+
+    core = keep_largest_component(ndimage.binary_erosion(mask_c, iterations=r))
+    aorta_c = ndimage.binary_dilation(core, iterations=r) & mask_c
+
+    esophagus_c = mask_c & ~aorta_c
+    aorta_c = aorta_c | (esophagus_c & ~keep_largest_component(esophagus_c))  # eso islands -> aorta
+    aorta_c = keep_largest_component(aorta_c)  # aorta islands -> esophagus
+
+    aorta = np.zeros_like(combined_mask)
+    aorta[sl] = aorta_c
+
+    corrected = gt.copy()
+    corrected[aorta] = 4
+    return corrected
+
+
 def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int, int],
                   test_mode: bool = False, hu_min=None, hu_max=None,
-                  target_spacing=None) -> tuple[float, float, float]:
+                  target_spacing=None, fix_aorta_esophagus: bool = False) -> tuple[float, float, float]:
     id_path: Path = source_path / ("train" if not test_mode else "test") / id_
 
     ct_path: Path = (id_path / f"{id_}.nii.gz") if not test_mode else (source_path / "test" / f"{id_}.nii.gz")
@@ -126,6 +172,8 @@ def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int
         # print(nib_obj.affine, gt_nib.affine)
         gt = np.asarray(gt_nib.dataobj)
         assert sanity_gt(gt, ct)
+        if fix_aorta_esophagus:
+            gt = split_merged_aorta_esophagus(gt)
     else:
         gt = np.zeros_like(ct, dtype=np.uint8)
 
@@ -226,7 +274,8 @@ def main(args: argparse.Namespace):
                                  test_mode=mode == 'test',
                                  hu_min=args.hu_min,
                                  hu_max=args.hu_max,
-                                 target_spacing=args.target_spacing)
+                                 target_spacing=args.target_spacing,
+                                 fix_aorta_esophagus=args.fix_aorta_esophagus)
         resolutions: list[tuple[float, float, float]]
         iterator = tqdm_(split_ids)
         match args.process:
@@ -257,6 +306,10 @@ def get_args() -> argparse.Namespace:
                         help='Resample in-plane to this physical spacing (mm/pixel) before '
                              'center-crop/pad to --shape. Default: no resampling (baseline), '
                              'native per-patient spacing is ignored like before.')
+    parser.add_argument('--fix_aorta_esophagus', action='store_true',
+                        help='Split the aorta back out of the merged esophagus label (1) using '
+                             'erosion/dilation by shape. Default: off, keeps the original merged '
+                             'label unchanged. See split_merged_aorta_esophagus() for details.')
     parser.add_argument('--retains', type=int, default=25, help="Number of retained patient for the validation data")
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--fold', type=int, default=0)
