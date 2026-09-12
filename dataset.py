@@ -64,13 +64,27 @@ class SliceDataset(Dataset):
 
         self.test_mode: bool = subset == 'test'
 
-        self.files = make_dataset(root_dir, subset)
+        all_files = make_dataset(root_dir, subset)
+
+        self.context_slices: int = context_slices
+        assert self.context_slices >= 0
+
+        if self.context_slices > 0:
+            self.imgs_by_sequence = {}
+
+            for img_path, _ in all_files:
+                prefix, width, z = self._parse_slice(img_path)
+                key = (prefix, width)
+                self.imgs_by_sequence.setdefault(key, {})[z] = img_path
+
+            self.sequence_bounds = {
+                key: (min(slices), max(slices))
+                for key, slices in self.imgs_by_sequence.items()
+            }
+
+        self.files = all_files
         if debug:
             self.files = self.files[:10]
-        self.img_by_stem = {
-            img_path.stem: img_path
-            for img_path, _ in self.files
-        }
         
         print(f">> Created {subset} dataset with {len(self)} images...")
 
@@ -104,24 +118,35 @@ class SliceDataset(Dataset):
 
         return data_dict
     
-    def _neighbor_img_path(self, img_path: Path, offset: int) -> Path:
-        if offset == 0: return img_path
-
-        stem = img_path.stem
+    def _parse_slice(self, img_path: Path) -> tuple[str, int, int]: 
+        stem = img_path.stem  
 
         if "_" in stem:
             prefix, index = stem.rsplit("_", 1)
-            separator = "_"
-        else:
+        else: 
             prefix, index = "", stem
-            separator = ""
 
-        if not index.isdigit(): return img_path
+        if not index.isdigit():
+            raise ValueError( f"Cannot use 2.5D context for file with non-numeric slice suffix: {img_path}")
+        return prefix, len(index), int(index)
 
-        z = int(index)
-        neighbor_z = z + offset
-        
-        if neighbor_z < 0: return img_path
+    def _neighbor_img_path(self, img_path: Path, offset: int) -> Path:
+        if offset == 0: 
+            return img_path 
 
-        neighbor_stem = f"{prefix}{separator}{neighbor_z:0{len(index)}d}"
-        return self.img_by_stem.get(neighbor_stem, img_path)
+        prefix,width, z = self._parse_slice(img_path) 
+        key = (prefix,width)
+
+        sequence = self.imgs_by_sequence[key]
+        min_z, max_z = self.sequence_bounds[key]
+
+        requested_z = z + offset
+        neighbor_z = min(max(requested_z, min_z), max_z)
+
+        neighbor_path =  sequence.get(neighbor_z)
+        if neighbor_path is None:   
+            raise FileNotFoundError(  
+                f"Missing neighboring slice {neighbor_z:0{width}d} for {img_path}"
+                f"inside sequence range [{min_z}, {max_z}].")  
+
+        return neighbor_path
