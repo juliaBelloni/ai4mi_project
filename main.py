@@ -98,6 +98,13 @@ def make_scheduler(args: argparse.Namespace, optimizer):
 
     raise ValueError(f"Invalid scheduler {args.scheduler}")
     
+def compute_invfreq_weights(loader: DataLoader, K: int, idk: list[int]) -> list[float]:
+    counts = torch.zeros(K)
+    for data in loader:
+        counts += data["gts"].sum(dim=(0, 2, 3))
+    weights = counts.sum() / (K * (counts + 1e-8))
+    return [weights[k].item() for k in idk]
+
 def save_config(args: argparse.Namespace) -> None:
     args.dest.mkdir(parents=True, exist_ok=True)
 
@@ -209,10 +216,17 @@ def runTraining(args):
     else:
         raise ValueError(args.mode, args.dataset)
 
+    ce_weights: list[float] | None = None
+    if args.ce_weights == "invfreq":
+        ce_weights = compute_invfreq_weights(train_loader, K, idk)
+        print(f">> Computed invfreq CE weights: {ce_weights}")
+    elif args.ce_weights is not None:
+        ce_weights = [float(w) for w in args.ce_weights.split(",")]
+
     if args.loss_fn == "ce":
-        loss_fn = CrossEntropy(idk=idk)
+        loss_fn = CrossEntropy(idk=idk, weight=ce_weights)
     elif args.loss_fn == "dicece":
-        loss_fn = DiceCE(idk=idk, lambda_=args.dicece_lambda)
+        loss_fn = DiceCE(idk=idk, lambda_=args.dicece_lambda, weight=ce_weights)
     else:
         raise ValueError(f"Invalid loss function {args.loss_fn}")
 
@@ -348,6 +362,10 @@ def main():
     parser.add_argument('--loss_fn', choices=["ce", "dicece"], default="ce", help="Loss function used during training.")
     parser.add_argument('--dicece_lambda', default=1., type=float,
                         help="Weight of the dice term when --loss_fn is dicece: L = L_CE + lambda * L_DICE.")
+    parser.add_argument('--ce_weights', default=None, type=str,
+                        help="Per-class weights for the CE term (applies to --loss_fn ce and dicece). Either "
+                             "comma-separated floats matching the supervised classes, e.g. '0.5,1,1,2,3', or "
+                             "'invfreq' to compute inverse-frequency weights from the training set.")
     parser.add_argument('--opt', choices=["adam", "adamw"], default="adam", help="Optimizer used during training.")
     parser.add_argument('--lr', default=0.0005, type=float, help="Learning rate used during training.")
     parser.add_argument( '--context_slices', default=0, type=int, help="Number of neighboring slices before and after the current slice. 0 keeps 2D behavior.")

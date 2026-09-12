@@ -29,10 +29,15 @@ from utils import simplex, sset
 
 
 class CrossEntropy():
-    def __init__(self, **kwargs):
+    """The standard cross-entropy, with optional class weighting."""
+    def __init__(self, idk: list[int], weight: list[float] | None = None):
         # Self.idk is used to filter out some classes of the target mask. Use fancy indexing
-        self.idk = kwargs['idk']
-        print(f"Initialized {self.__class__.__name__} with {kwargs}")
+        self.idk = idk
+        # Class weight for the CE term, in the same order as idk. Defaults to uniform.
+        weight = weight if weight is not None else [1.] * len(idk)
+        assert len(weight) == len(idk)
+        self.weight = Tensor(weight)
+        print(f"Initialized {self.__class__.__name__} with {idk=}, {weight=}")
 
     def __call__(self, pred_softmax, weak_target):
         assert pred_softmax.shape == weak_target.shape
@@ -41,9 +46,10 @@ class CrossEntropy():
 
         log_p = (pred_softmax[:, self.idk, ...] + 1e-10).log()
         mask = weak_target[:, self.idk, ...].float()
+        weight = self.weight.to(mask.device)
 
-        loss = - einsum("bkwh,bkwh->", mask, log_p)
-        loss /= mask.sum() + 1e-10
+        loss = - einsum("bkwh,bkwh,k->", mask, log_p, weight)
+        loss /= einsum("bkwh,k->", mask, weight) + 1e-10
 
         return loss
 
@@ -52,10 +58,11 @@ class DiceCE():
     and the default in nnU-Net, combining cross-entropy
     and dice loss, so that L = L_CE + lambda * L_DICE"""
 
-    def __init__(self, idk: list[int], lambda_: float, smooth: float = 1e-8):
+    def __init__(self, idk: list[int], lambda_: float, smooth: float = 1e-8, weight: list[float] | None = None):
         self.idk = idk
         self.lambda_ = lambda_
         self.smooth = smooth
+        self.ce = CrossEntropy(idk=idk, weight=weight)
         print(f"Initialized {self.__class__.__name__} with {idk=}, lambda = {lambda_}")
 
     def __call__(self, pred_softmax: Tensor, weak_target: Tensor) -> Tensor:
@@ -63,15 +70,12 @@ class DiceCE():
         assert simplex(pred_softmax)
         assert sset(weak_target, [0, 1])
 
+        ce_loss = self.ce(pred_softmax, weak_target)
+
         pred_softmax = pred_softmax[:, self.idk, ...]
         mask = weak_target[:, self.idk, ...].float()
 
-        # Cross-entropy term
-        log_p = (pred_softmax + 1e-10).log()
-        ce_loss = - einsum("bkwh,bkwh->", mask, log_p)
-        ce_loss /= mask.sum() + 1e-10
-
-        # Soft dice term, averaged over classes and batch
+        # Soft dice term, averaged over classes and batch (unweighted)
         intersection = einsum("bkwh,bkwh->bk", pred_softmax, mask)
         union = einsum("bkwh->bk", pred_softmax) + einsum("bkwh->bk", mask)
         dice_score = (2 * intersection + self.smooth) / (union + self.smooth)
