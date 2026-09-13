@@ -31,28 +31,6 @@ Use a fresh `--data_dir` when changing bounds: the simple smoke cache checks onl
 whether the directory exists. The same HU flags also work directly in `slice_segthor.py`.
 The notebook compares candidate windows; these example bounds are not automatic defaults.
 
-## Added flag: `--target_spacing`
-
-In-plane pixel spacing (`dx`/`dy` from the CT header) varies per patient (roughly 0.9-1.4mm),
-but the baseline always resizes every patient's slice to the same fixed `--shape` pixel grid
-regardless of that native spacing — so the same pixel count covers a different physical area
-for different patients.
-
-Supply `--target_spacing` (mm per in-plane pixel) to fix this: each patient's slice is first
-resized so 1 pixel consistently represents that physical spacing, then center-cropped (or
-zero/background-padded, if smaller) to the fixed `--shape` so batching still works. Without
-the flag, behavior is unchanged from the baseline (a direct resize straight to `--shape`,
-ignoring native spacing).
-
-```bash
-python slice_segthor.py --source_dir data/segthor_part1 --dest_dir data/SEGTHOR_spacing1 \
-  --shape 256 256 --target_spacing 1.0
-```
-
-Use a fresh `--data_dir`/`--dest_dir` when changing this, same as HU windowing above — it
-changes the stored pixel content, not just how it's loaded. Also works with `--test_pipeline`
-via `python main.py --test_pipeline --target_spacing 1.0 --data_dir data/SEGTHOR_smoke_spacing1`.
-
 **Recommended value:** use the median in-plane spacing across the training patients rather
 than an arbitrary number — this is the standard approach (e.g. nnU-Net resamples to the
 dataset's median spacing by default). Per `preprocessing_params.ipynb`, that's currently
