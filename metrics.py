@@ -11,7 +11,7 @@ from typing import Optional, Sequence
 import numpy as np
 from scipy import ndimage
 
-def iou(pred: np.ndarray, gt: np.ndarray, c: int = 1) -> float:
+def iou(pred: np.ndarray, gt: np.ndarray, c: int = 1, eta: float = 1e-8) -> float:
     """
     Parameters
     ----------
@@ -27,12 +27,8 @@ def iou(pred: np.ndarray, gt: np.ndarray, c: int = 1) -> float:
     pred_mask = pred == c
     gt_mask = gt == c
 
-    intersection = np.logical_and(pred_mask, gt_mask).sum(dtype=np.int64)
-    union = np.logical_or(pred_mask, gt_mask).sum(dtype=np.int64)
-
-    # If class c is absent from both pred and gt (their union is empty)
-    if union == 0:
-        return 1.0
+    intersection = np.logical_and(pred_mask, gt_mask).sum(dtype=np.int64) + eta
+    union = np.logical_or(pred_mask, gt_mask).sum(dtype=np.int64) + eta
 
     return float(intersection / union)
 
