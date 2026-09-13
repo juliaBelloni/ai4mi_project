@@ -58,3 +58,61 @@ def dice(pred: np.ndarray, gt: np.ndarray, classes: Optional[Sequence[int]] = No
 
     return 2 * ious / (1 + ious)
 
+def _mask_border(mask: np.ndarray) -> np.ndarray:
+    """Boolean array marking the surface (boundary) voxels of a binary mask."""
+    eroded = ndimage.binary_erosion(mask)
+    return mask & ~eroded
+
+
+def _surface_distances(pred_mask: np.ndarray, gt_mask: np.ndarray,
+                        spacing: Sequence[float]) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Returns `(pred_to_gt, gt_to_pred)`: the distance from every surface voxel of `pred_mask` to the nearest surface voxel of `gt_mask`, and vice versa.
+    """
+    # ensure makssa are non-empty
+    assert pred_mask is not None and gt_mask is not None
+    pred_border = _mask_border(pred_mask)
+    gt_border = _mask_border(gt_mask)
+
+    dt_gt = ndimage.distance_transform_edt(~gt_border, sampling=spacing)
+    dt_pred = ndimage.distance_transform_edt(~pred_border, sampling=spacing)
+
+    return dt_gt[pred_border], dt_pred[gt_border]
+
+
+def hausdorff_distance_95(pred: np.ndarray, gt: np.ndarray, spacing: Sequence[float], c: int = 1) -> float:
+    """
+
+    Parameters
+    ----------
+    pred, gt:
+        3D integer (or boolean) label maps of identical shape, `(X, Y, Z)`.
+    spacing:
+        Physical voxel size (sx, sy, sz) in mm, matching the axis order of
+        pred/gt.
+    c:
+        The class value to score.
+
+    Returns
+    -------
+    float
+        HD95 in mm: `max(P95(pred->gt distances), P95(gt->pred distances))`.
+    """
+    assert pred.shape == gt.shape, (pred.shape, gt.shape)
+    assert pred.ndim == len(spacing), (pred.shape, spacing)
+
+    pred_mask = pred == c
+    gt_mask = gt == c
+
+    # no boundary disagreement is possible
+    if not pred_mask.any() and not gt_mask.any():
+        return 0.0
+
+    #  no reference surface on the empty side
+    if not pred_mask.any() or not gt_mask.any():
+        return float("nan")
+
+    pred_to_gt, gt_to_pred = _surface_distances(pred_mask, gt_mask, spacing)
+
+    return float(max(np.percentile(pred_to_gt, 95), np.percentile(gt_to_pred, 95)))
+
