@@ -98,11 +98,34 @@ def make_scheduler(args: argparse.Namespace, optimizer):
 
     raise ValueError(f"Invalid scheduler {args.scheduler}")
     
-def compute_invfreq_weights(loader: DataLoader, K: int, idk: list[int]) -> list[float]:
+def compute_invfreq_weights(loader: DataLoader, K: int, idk: list[int], alpha: float = 1.0) -> list[float]:
+    """These are the inverse frequency weights as given by
+    Sugino et al. (2021) in eq. 3.
+
+        w_k = (N / (K * n_k)) ** alpha
+    where 
+        N = total pixel count, K = number of classes,
+        n_k = pixel count of class k.
+
+    alpha is the same power parameter), but with an added
+    constant factor (counts.sum() / K) ** alpha, and the 
+    requirement alpha > 0, so it can be interpreted that: 
+
+    w = 1 for a class with an average number of pixels.
+    w > 1 means the class is rarer (organs).
+    w < 1 means the class is more common (background). 
+    
+    The constant factor doesn't matter for the loss, as the
+    cross-entropy we use is normalized.
+
+    Sugino et al. (2021): ./papers/healthcare-09-00938.pdf"""
+
+    assert alpha > 0, f"alpha must be > 0 to keep rarer classes at w > 1, got {alpha}"
+
     counts = torch.zeros(K)
     for data in loader:
         counts += data["gts"].sum(dim=(0, 2, 3))
-    weights = counts.sum() / (K * (counts + 1e-8))
+    weights = (counts.sum() / (K * (counts + 1e-8))) ** alpha
     return [weights[k].item() for k in idk]
 
 def save_config(args: argparse.Namespace) -> None:
@@ -218,7 +241,7 @@ def runTraining(args):
 
     ce_weights: list[float] | None = None
     if args.ce_weights == "invfreq":
-        ce_weights = compute_invfreq_weights(train_loader, K, idk)
+        ce_weights = compute_invfreq_weights(train_loader, K, idk, alpha=args.ce_weights_alpha)
         print(f">> Computed invfreq CE weights: {ce_weights}")
     elif args.ce_weights is not None:
         ce_weights = [float(w) for w in args.ce_weights.split(",")]
@@ -369,6 +392,8 @@ def main():
                         help="Per-class weights for the CE term (applies to --loss_fn ce and dicece). Either "
                              "comma-separated floats matching the supervised classes, e.g. '0.5,1,1,2,3', or "
                              "'invfreq' to compute inverse-frequency weights from the training set.")
+    parser.add_argument('--ce_weights_alpha', default=1.0, type=float,
+                        help="Power parameter for --ce_weights invfreq (Sugino et al. 2021, eq. 3)")
     parser.add_argument('--opt', choices=["adam", "adamw"], default="adam", help="Optimizer used during training.")
     parser.add_argument('--lr', default=0.0005, type=float, help="Learning rate used during training.")
     parser.add_argument( '--context_slices', default=0, type=int, help="Number of neighboring slices before and after the current slice. 0 keeps 2D behavior.")
