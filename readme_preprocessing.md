@@ -3,8 +3,44 @@
 
 The flag uses the first two sorted patients (Patient_01 and Patient_02), creates smoke data if its directory is missing, and runs one training/validation epoch. Existing smoke directories are reused as-is.
 
-# Preprocessing -> USE A NEW --DATA_DIR so you actually change the data
-## Added flags: `--hu_min` and `--hu_max` -> for this dataset use -1000, 300! 
+# Data correction
+
+## Added flag: `--fix_aorta_esophagus`
+
+`GT.nii.gz` merges the aorta into the esophagus label (`1`) instead of using its own
+label (`4`), for every patient checked. Confirmed three ways: raw label values in
+`GT.nii.gz` never include `4`; a leftover corrected annotation for `Patient_07`
+(`GT2.nii.gz`) shows the same voxels correctly split as `1`/`4`; and the original
+SegTHOR challenge lists aorta as one of its 4 target organs (`readme.md`), so this
+is a data bug in how this course's copy was packaged, not an intentional 4-class
+dataset. Reported to the course; fix it before training regardless of the cause.
+
+Splits them apart using erosion and dialtion. The aorta is much
+thicker than the esophagus, so eroding the merged region by a few voxels leaves
+only the aorta's core; dilating that core back (clipped to the original merged
+region) recovers its full extent. Small leftover islands on either side are
+reassigned to the other class, since both the real esophagus and the real aorta
+are each a single connected tube. See `split_merged_aorta_esophagus()` in
+`slice_segthor.py` for the exact steps.
+
+Validated against `Patient_07`'s known-correct split (`GT2.nii.gz`, the only
+patient with a ground-truth answer): **0.99 aorta Dice, 0.97 esophagus Dice**.
+Other methods like HU-intensity, watershed and random-walker did not perform as good.
+
+```bash
+python slice_segthor.py --source_dir data/segthor_part1 --dest_dir data/SEGTHOR_fixed \
+  --shape 256 256 --fix_aorta_esophagus --retain 5
+```
+Also works with `--test_pipeline` via
+`python main.py --test_pipeline --fix_aorta_esophagus --data_dir data/SEGTHOR_smoke_fixed`.
+
+Known limitation: one patient (`Patient_03`) is a genuine outlier where this
+shape-only method underperforms relative to the others checked — worth a manual
+look before trusting it blindly on every patient.
+
+# Preprocessing
+## Added flags: `--hu_min` and `--hu_max` 
+### For this dataset use -1000, 300. Verify in preprocessing_params.ipynb.
 
 Supply both flags to enable HU windowing. Without them, the original per-volume
 Min-Max normalization stays unchanged. Bounds must be finite and `hu_min < hu_max`.
@@ -19,66 +55,17 @@ normalized = (clip(HU, hu_min, hu_max) - hu_min) / (hu_max - hu_min)
 The current pipeline still stores 8-bit PNG images: normalized values are multiplied
 by 255 and quantized, then divided by 255 by the training loader. Masks are unchanged.
 
-For example, test the `[-200, 300]` candidate window in one command:
+For example, test the `[-1000, 300]` candidate window in one command:
 
 ```bash
-python main.py --test_pipeline --hu_min -200 --hu_max 300 \
-  --data_dir data/SEGTHOR_smoke_hu_m200_300 \
-  --dest results/segthor/smoke_hu_m200_300
+python main.py --test_pipeline --hu_min -1000 --hu_max 300 \
+  --data_dir data/SEGTHOR_smoke_hu_m1000_300 \
+  --dest results/segthor/smoke_hu_1000_300
 ```
 
 Use a fresh `--data_dir` when changing bounds: the simple smoke cache checks only
 whether the directory exists. The same HU flags also work directly in `slice_segthor.py`.
 The notebook compares candidate windows; these example bounds are not automatic defaults.
-
-**Recommended value:** use the median in-plane spacing across the training patients rather
-than an arbitrary number — this is the standard approach (e.g. nnU-Net resamples to the
-dataset's median spacing by default). Per `preprocessing_params.ipynb`, that's currently
-**0.9766mm** for this dataset. No automatic detection yet; pass it explicitly.
-
-# Data correction
-
-## Added flag: `--fix_aorta_esophagus`
-
-`GT.nii.gz` merges the aorta into the esophagus label (`1`) instead of using its own
-label (`4`), for every patient checked. Confirmed three ways: raw label values in
-`GT.nii.gz` never include `4`; a leftover corrected annotation for `Patient_07`
-(`GT2.nii.gz`) shows the same voxels correctly split as `1`/`4`; and the original
-SegTHOR challenge lists aorta as one of its 4 target organs (`readme.md`), so this
-is a data bug in how this course's copy was packaged, not an intentional 4-class
-dataset. Reported to the course; fix it before training regardless of the cause.
-
-Splits them apart using shape alone, no CT intensity needed: the aorta is much
-thicker than the esophagus, so eroding the merged region by a few voxels leaves
-only the aorta's core; dilating that core back (clipped to the original merged
-region) recovers its full extent. Small leftover islands on either side are
-reassigned to the other class, since both the real esophagus and the real aorta
-are each a single connected tube. See `split_merged_aorta_esophagus()` in
-`slice_segthor.py` for the exact steps.
-
-Validated against `Patient_07`'s known-correct split (`GT2.nii.gz`, the only
-patient with a ground-truth answer): **0.99 aorta Dice, 0.97 esophagus Dice**.
-Also tried and rejected as worse or unnecessarily complex: pure HU-intensity
-thresholding (aorta and esophagus overlap too much in raw intensity to separate
-this way), watershed and random-walker variants (both plateaued below plain
-erosion/dilation even after tuning), and a per-voxel geometry classifier trained
-against heart/trachea position (matched this method's accuracy but added a
-training dependency and per-patient classifier for no accuracy gain once the
-same island cleanup was applied to the simpler method).
-
-```bash
-python slice_segthor.py --source_dir data/segthor_part1 --dest_dir data/SEGTHOR_fixed \
-  --shape 256 256 --fix_aorta_esophagus
-```
-
-Use a fresh `--data_dir`/`--dest_dir` when enabling this, same as HU windowing and
-`--target_spacing` above — it changes the stored pixel content, not just how it's
-loaded. Also works with `--test_pipeline` via
-`python main.py --test_pipeline --fix_aorta_esophagus --data_dir data/SEGTHOR_smoke_fixed`.
-
-Known limitation: one patient (`Patient_03`) is a genuine outlier where this
-shape-only method underperforms relative to the others checked — worth a manual
-look before trusting it blindly on every patient.
 
 # Training-time slice filtering
 
@@ -98,9 +85,7 @@ python main.py --dataset SEGTHOR --mode full --epochs 25 \
     --dest results/segthor/ce_dropempty --gpu --drop_empty_slices 0.9
 ```
 
-Note: this filters slices with **no organ of any class** present. It's unrelated to, and does
-not fix, individual classes (e.g. aorta) being absent from a slice that still has other organs
-present — that's a separate metric-reporting concern, not a training-data-balance one.
+# TODO: fix for 2.5D implementation
 
 
 # Augmentation
@@ -156,18 +141,29 @@ noise_std = torch.empty(()).uniform_(0.0, 0.01).item()
 - **Full slices:** there is no random patch sampling, scaling, translation,
   gamma adjustment, or elastic deformation in this implementation.
 
-### Commands
-
-After correcting the image-loading lines, enable augmentation with:
-
+# Example commands
+Preprocess:
 ```bash
-python main.py --dataset SEGTHOR --mode full --epochs 25 \
-    --dest results/segthor/ce_aug --gpu --augment
-```
-
-not using the flag triggers the standard no augmentation.
-
+python slice_segthor.py \
+  --source_dir data/segthor_part1_fixed \
+  --dest_dir data/SEGTHOR_fixed_hu_m1000_300 \
+  --shape 256 256 \
+  --hu_min -1000 \
+  --hu_max 300 \
+  --retains 4 \
+  --seed 0 \
+  --fold 0 \
+  --process -1
+  ```
+  Then train:
 ```bash
-python main.py --dataset SEGTHOR --mode full --epochs 25 \
-    --dest results/segthor/ce --gpu
-```
+  python main.py \
+  --dataset SEGTHOR \
+  --mode full \
+  --epochs 25 \
+  --data_dir data/SEGTHOR_fixed_hu_m1000_300 \
+  --dest results/segthor/full_fixed_hu_m1000_300_spacing09766_aug_dropempty \
+  --mps \
+  --augment \
+  --drop_empty_slices 0.9
+   ```
