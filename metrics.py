@@ -36,5 +36,25 @@ def iou(pred: np.ndarray, gt: np.ndarray, c: int = 1) -> float:
 
     return float(intersection / union)
 
+def dice(pred: np.ndarray, gt: np.ndarray, classes: Optional[Sequence[int]] = None) -> np.ndarray:
+    """
+    Parameters
+    ----------
+    pred, gt:
+        Integer label maps of identical shape.
+    classes:
+        The class values to score.
 
+    Returns
+    -------
+    np.ndarray
+        1D array of shape (len(classes),), one Dice score per class in
+        [0, 1]. A class absent from both pred and gt yields Dice = 1.0,
+    """
+    if classes is None:
+        classes = sorted(set(np.unique(pred).tolist()) | set(np.unique(gt).tolist()))
+
+    ious = np.array([iou(pred, gt, c) for c in classes], dtype=np.float64)
+
+    return 2 * ious / (1 + ious)
 
