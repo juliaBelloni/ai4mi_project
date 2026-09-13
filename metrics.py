@@ -116,3 +116,37 @@ def hausdorff_distance_95(pred: np.ndarray, gt: np.ndarray, spacing: Sequence[fl
 
     return float(max(np.percentile(pred_to_gt, 95), np.percentile(gt_to_pred, 95)))
 
+def average_surface_distance(pred: np.ndarray, gt: np.ndarray, spacing: Sequence[float], c: int = 1) -> float:
+    """
+
+    Parameters
+    ----------
+    pred, gt:
+        3D label maps of identical shape (X, Y, Z).
+    spacing:
+        Physical voxel size (sx, sy, sz) in mm, matching the axis order of
+        pred/gt
+    c:
+        The class value to score.
+
+    Returns
+    -------
+    float
+        The mean, in mm, of the pooled pred->gt and gt->pred surface
+        distances (one mean over every surface voxel on both sides).
+    """
+    assert pred.shape == gt.shape, (pred.shape, gt.shape)
+    assert pred.ndim == len(spacing), (pred.shape, spacing)
+
+    pred_mask = pred == c
+    gt_mask = gt == c
+
+    if not pred_mask.any() and not gt_mask.any():
+        return 0.0
+    if not pred_mask.any() or not gt_mask.any():
+        return float("nan")
+
+    pred_to_gt, gt_to_pred = _surface_distances(pred_mask, gt_mask, spacing)
+
+    return float(np.mean(np.concatenate([pred_to_gt, gt_to_pred])))
+
