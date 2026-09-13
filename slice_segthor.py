@@ -115,12 +115,9 @@ def keep_largest_component(mask: np.ndarray) -> np.ndarray:
 
 
 def split_merged_aorta_esophagus(gt: np.ndarray, r: int = 4) -> np.ndarray:
-    """Some GT.nii.gz files merge the aorta into the esophagus label (1) instead of
-    its own label (4) -- confirmed via a leftover corrected annotation for Patient_07
-    (GT2.nii.gz) and the original SegTHOR challenge listing aorta as one of its 4
-    target organs. Splits them apart using shape alone: the aorta is much thicker
-    than the esophagus, so eroding by r voxels leaves only the aorta's core; dilating
-    that core back (clipped to the original merged region) recovers its full extent.
+    """ In the GT files aorta and esophagus are merged into the same label (1). This function takes the GT and splits them into two separate labels (1 for esophagus, 4 for aorta) using erotion and dilation operations. The aorta is much thicker
+    than the esophagus, so eroding by r voxels leaves only the aorta's core.
+    
     Small leftover islands on either side are reassigned to the other class, since
     both the real esophagus and the real aorta are each a single connected tube.
     Validated at 0.99 aorta Dice against Patient_07's known-correct split.
