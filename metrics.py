@@ -65,7 +65,7 @@ def _surface_distances(pred_mask: np.ndarray, gt_mask: np.ndarray,
     """
     Returns `(pred_to_gt, gt_to_pred)`: the distance from every surface voxel of `pred_mask` to the nearest surface voxel of `gt_mask`, and vice versa.
     """
-    # ensure makssa are non-empty
+    # callers ensure masks are non-empty
     assert pred_mask is not None and gt_mask is not None
     pred_border = _mask_border(pred_mask)
     gt_border = _mask_border(gt_mask)
