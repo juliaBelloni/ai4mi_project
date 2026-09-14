@@ -49,7 +49,9 @@ from utils import (Dcm,
                    probs2class,
                    tqdm_,
                    dice_coef,
-                   save_images)
+                   save_images,
+                   estimate_flops,
+                   save_flops_count)
 
 from losses import (CrossEntropy, Dice, DiceCE, Balance)
 import json
@@ -267,8 +269,10 @@ def runTraining(args):
     log_dice_val: Tensor = torch.zeros((args.epochs, len(val_loader.dataset), K))
 
     best_dice: float = 0
+    epochs_ran: int = 0
 
     for e in range(args.epochs):
+        epochs_ran = e + 1
         for m in ['train', 'val']:
             match m:
                 case 'train':
@@ -378,6 +382,11 @@ def runTraining(args):
             print(f">>> Early stopping after {epochs_without_improvement} epochs without improvement")
             break
 
+    if args.count_flops: # pytorch FLOPs are estimates and mainly cover conv/matmul operations
+        flops_count = estimate_flops(net, optimizer, loss_fn, train_loader, val_loader, device, epochs_ran)
+        save_flops_count(args.dest, flops_count)
+
+
 def main():
     parser = argparse.ArgumentParser()
 
@@ -423,6 +432,7 @@ def main():
     parser.add_argument( '--early_stopping_min_delta', default=0.0, type=float,help="Minimum validation Dice improvement needed to reset early stopping.")
     parser.add_argument('--deterministic', action='store_true', help="Enable deterministic PyTorch/CUDA behavior and seeded DataLoader shuffling.")
     parser.add_argument('--seed', default=0, type=int, help="Seed used when --deterministic is set.")
+    parser.add_argument('--count_flops', action='store_true', help="Estimate train/validation FLOPs over 10 batches.")
 
     args = parser.parse_args()
 
