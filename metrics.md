@@ -103,3 +103,49 @@ surface-extraction approach: binary erosion (`scipy.ndimage.binary_erosion`)
 to find each mask's boundary voxels, then `scipy.ndimage.distance_transform_edt`
 with `sampling=spacing` to get physically-scaled nearest-boundary distances in
 each direction.
+
+## eval.py
+
+[`eval.py`](eval.py) scores a folder of merged prediction volumes (the
+output of [`stitch.py`](stitch.py)) against ground-truth volumes, using
+`dice`, `hausdorff_distance_95`, and `average_surface_distance` from
+`metrics.py`.
+`--pred_folder` must hold one `<patient_id>.nii.gz` file per patient (the
+`stitch.py` convention); that file listing is what determines which
+patients get scored. Voxel spacing is read straight from each patient's
+ground-truth `.nii.gz` header (`nib.load(...).header.get_zooms()`), so no
+separate `spacing.pkl` is needed.
+
+`--gt_pattern` locates each patient's ground truth via a `{id_}`
+placeholder — the same convention `stitch.py` already uses for
+`--source_scan_pattern` — so it works equally well against a flat folder or
+the raw nested SegTHOR layout, with no copying step needed:
+
+```
+# Flat folder of one <patient_id>.nii.gz per patient:
+$ python eval.py --pred_folder volumes/segthor/ce \
+    --gt_pattern "data/segthor_gt_val/{id_}.nii.gz" \
+    --dest results/segthor/ce/eval_metrics.csv
+
+# Directly against the raw nested layout (data/segthor_part1/train/<id>/GT.nii.gz):
+$ python eval.py --pred_folder volumes/segthor/ce \
+    --gt_pattern "data/segthor_part1/train/{id_}/GT.nii.gz" \
+    --dest results/segthor/ce/eval_metrics.csv
+```
+
+If a predicted patient has no matching ground-truth file under
+`gt_pattern`, `eval.py` fails with an error message and names exactly which patient ids
+are missing.
+
+- `--num_classes` is optional; if omitted, the set of classes is inferred
+  from the ground-truth volumes. Class `0` is always treated as background
+  and excluded from scoring.
+- Produces two CSV files: `eval_metrics.csv` (one row per
+  `(patient_id, class)`, with `dice`/`hausdorff_distance_95`/
+  `average_surface_distance` columns — every individual score), and
+  `eval_metrics_summary.csv` (one row per class, with `..._mean`/`..._std`
+  columns, aggregated across patients with `np.nanmean`/`np.nanstd`). The
+  summary is also printed to stdout.
+- Error messages if a patient's ground truth
+  can't be found via `gt_pattern`, or if a patient's prediction and
+  ground-truth volumes have different shapes.
