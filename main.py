@@ -51,7 +51,7 @@ from utils import (Dcm,
                    dice_coef,
                    save_images)
 
-from losses import (CrossEntropy, Dice, DiceCE)
+from losses import (CrossEntropy, Dice, DiceCE, Balance)
 import json
 import random
 
@@ -246,12 +246,17 @@ def runTraining(args):
     elif args.ce_weights is not None:
         ce_weights = [float(w) for w in args.ce_weights.split(",")]
 
+    if ce_weights is not None and args.loss_fn not in ("ce", "dicece"):
+        print(f">> Warning: --ce_weights has no effect for --loss_fn {args.loss_fn}")
+
     if args.loss_fn == "ce":
         loss_fn = CrossEntropy(idk=idk, weight=ce_weights)
     elif args.loss_fn == "dice":
         loss_fn = Dice(idk=idk)
     elif args.loss_fn == "dicece":
         loss_fn = DiceCE(idk=idk, lambda_=args.dicece_lambda, weight=ce_weights)
+    elif args.loss_fn == "balance":
+        loss_fn = Balance(idk=idk, alpha=args.balance_alpha, t=args.balance_t, normalized=args.balance_normalized)
     else:
         raise ValueError(f"Invalid loss function {args.loss_fn}")
 
@@ -303,6 +308,9 @@ def runTraining(args):
                     # Metrics computation, not used for training
                     pred_seg = probs2one_hot(pred_probs)
                     log_dice[e, j:j + B, :] = dice_coef(pred_seg, gt)  # One DSC value per sample and per class
+
+                    if isinstance(loss_fn, Balance) and m == 'train':
+                        loss_fn.step(pred_probs, gt)
 
                     loss = loss_fn(pred_probs, gt)
                     log_loss[e, i] = loss.item()  # One loss value per batch (averaged in the loss)
@@ -384,7 +392,7 @@ def main():
     parser.add_argument('--debug', action='store_true',
                         help="Keep only a fraction (10 samples) of the datasets, "
                              "to test the logics around epochs and logging easily.")
-    parser.add_argument('--loss_fn', choices=["ce", "dice", "dicece"], default="ce", help="Loss function used during training.")
+    parser.add_argument('--loss_fn', choices=["ce", "dice", "dicece", "balance"], default="ce", help="Loss function used during training.")
     parser.add_argument('--dicece_lambda', default=0.5, type=float,
                         help="Weight of the dice term when --loss_fn is dicece, in [0, 1]: "
                              "L = (1 - dicece_lambda) * L_CE + dicece_lambda * L_DICE.")
@@ -394,6 +402,15 @@ def main():
                              "'invfreq' to compute inverse-frequency weights from the training set.")
     parser.add_argument('--ce_weights_alpha', default=1.0, type=float,
                         help="Power parameter for --ce_weights invfreq (Sugino et al. 2021, eq. 3)")
+    parser.add_argument('--balance_alpha', default=0.5, type=float,
+                        help="Weight of the Intra-CBL term when --loss_fn is balance, in [0, 1]: "
+                             "BL = (1 - alpha) * Inter-CBL + alpha * Intra-CBL (Xu et al. 2025, eq. 13).")
+    parser.add_argument('--balance_t', default=0.9, type=float,
+                        help="Threshold t for --loss_fn balance (Xu et al. 2025): splits easy/hard pixels "
+                             "for Intra-CBL and is also used in the Inter-CBL convergence check.")
+    parser.add_argument('--balance_normalized', action='store_true',
+                        help="Normalize Inter-CBL and Intra-CBL so it is a actual average, so that "
+                             "the weights sum to one (not part of Xu et al. 2025, but could help).")
     parser.add_argument('--opt', choices=["adam", "adamw"], default="adam", help="Optimizer used during training.")
     parser.add_argument('--lr', default=0.0005, type=float, help="Learning rate used during training.")
     parser.add_argument( '--context_slices', default=0, type=int, help="Number of neighboring slices before and after the current slice. 0 keeps 2D behavior.")
