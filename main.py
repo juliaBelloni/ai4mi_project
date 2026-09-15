@@ -23,6 +23,8 @@
 # SOFTWARE.
 
 import argparse
+import subprocess
+import sys
 import warnings
 from typing import Any
 from pathlib import Path
@@ -203,7 +205,7 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
 
     # Dataset part
     B: int = datasets_params[args.dataset]['B']
-    root_dir = Path("data") / args.dataset
+    root_dir = args.data_dir if args.data_dir is not None else Path("data") / args.dataset
 
     generator = None
     worker_init_fn = None
@@ -217,7 +219,9 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
         root_dir,
         img_transform=img_transform,
         gt_transform=partial(gt_transform, K),
+        augment=args.augment,
         debug=args.debug,
+        drop_empty_slices=args.drop_empty_slices,
         context_slices=args.context_slices)
 
     train_sampler = None
@@ -421,14 +425,52 @@ def runTraining(args):
     save_config(args)
 
 
+def ensure_smoke_data(data_dir: Path, source_dir: Path, hu_min=None, hu_max=None,
+                      target_spacing=None, fix_aorta_esophagus=False):
+    """Create smoke data only if its directory does not exist."""
+    if data_dir.exists():
+        print(f'Reusing smoke dataset: {data_dir}')
+        return
+
+    print(f'Creating smoke dataset: {data_dir}', flush=True)
+    command = [sys.executable, str(Path(__file__).with_name('slice_segthor.py')),
+               '--source_dir', str(source_dir), '--dest_dir', str(data_dir), '--test_pipeline']
+    if hu_min is not None:
+        command += ['--hu_min', str(hu_min), '--hu_max', str(hu_max)]
+    if target_spacing is not None:
+        command += ['--target_spacing', str(target_spacing)]
+    if fix_aorta_esophagus:
+        command += ['--fix_aorta_esophagus']
+    subprocess.run(command, check=True)
+
+
 def main():
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--epochs', default=20, type=int)
-    parser.add_argument('--dataset', default='TOY2', choices=datasets_params.keys())
+    parser.add_argument('--test_pipeline', action='store_true',
+                        help='Run one epoch; for SEGTHOR, create or reuse the two-patient smoke dataset.')
+    parser.add_argument('--dataset', default=None, choices=datasets_params.keys(),
+                        help='Defaults to SEGTHOR with --test_pipeline, otherwise TOY2.')
+    parser.add_argument('--data_dir', type=Path, default=None,
+                        help='Processed train/val directory; defaults to data/SEGTHOR_smoke for '
+                             'a SEGTHOR smoke run, otherwise data/<dataset>.')
+    parser.add_argument('--source_dir', type=Path, default=Path('data/segthor_part1'),
+                        help='Raw SegTHOR root containing train/, used for smoke preprocessing.')
+    parser.add_argument('--hu_min', type=float, default=None,
+                        help='Smoke preprocessing HU lower bound; requires --hu_max and a fresh --data_dir.')
+    parser.add_argument('--hu_max', type=float, default=None,
+                        help='Smoke preprocessing HU upper bound; requires --hu_min.')
+    parser.add_argument('--target_spacing', type=float, default=None,
+                        help='Smoke preprocessing target in-plane spacing (mm/pixel); '
+                             'requires a fresh --data_dir, same as --hu_min/--hu_max.')
+    parser.add_argument('--fix_aorta_esophagus', action='store_true',
+                        help='Smoke preprocessing: split the merged aorta/esophagus label. '
+                             'Default off; requires a fresh --data_dir, same as --hu_min/--hu_max.')
     parser.add_argument('--mode', default='full', choices=['partial', 'full'])
-    parser.add_argument('--dest', type=Path, required=True,
-                        help="Destination directory to save the results (predictions and weights).")
+    parser.add_argument('--dest', type=Path,
+                        help='Results directory; required normally, defaults to '
+                             'results/<dataset>/smoke_run with --test_pipeline.')
 
     parser.add_argument('--gpu', action='store_true')
     parser.add_argument('--mps', action='store_true')
@@ -469,8 +511,35 @@ def main():
     parser.add_argument('--only_count_flops', action='store_true', help="Estimate FLOPs and exit without training.")
     parser.add_argument('--oversample_foreground', action='store_true', help="Enable foreground oversampling during training.")
     parser.add_argument('--oversample_foreground_percent', default=0.5, type=float, help="Fraction of foreground-containing images to sample when --oversample_foreground is set.")
+    parser.add_argument('--augment', action='store_true',
+                        help="Turn on augmentation for the training data.")
+    parser.add_argument('--drop_empty_slices', type=float, default=0.0,
+                        help="Fraction (0-1) of purely-background training slices to randomly "
+                             "drop (fixed seed). Default 0 keeps every slice, matching the "
+                             "baseline. Validation is never filtered.")
 
     args = parser.parse_args()
+    if (args.hu_min is None) != (args.hu_max is None):
+        parser.error('Supply --hu_min and --hu_max together')
+    if not (0.0 <= args.drop_empty_slices <= 1.0):
+        parser.error('--drop_empty_slices must be between 0 and 1')
+    if args.hu_min is not None and not (np.isfinite(args.hu_min) and np.isfinite(args.hu_max)
+                                        and args.hu_min < args.hu_max):
+        parser.error('HU bounds must be finite, with --hu_min < --hu_max')
+    if args.dataset is None:
+        args.dataset = 'SEGTHOR' if args.test_pipeline else 'TOY2'
+    if args.dest is None:
+        if not args.test_pipeline:
+            parser.error('--dest is required unless --test_pipeline is set')
+        args.dest = Path('results') / args.dataset.lower() / 'smoke_run'
+    if args.test_pipeline:
+        args.epochs = 1
+        print('Smoke run: one training/validation epoch (--epochs is overridden).')
+        if args.dataset == 'SEGTHOR':
+            if args.data_dir is None:
+                args.data_dir = Path('data/SEGTHOR_smoke')
+            ensure_smoke_data(args.data_dir, args.source_dir, args.hu_min, args.hu_max,
+                              args.target_spacing, args.fix_aorta_esophagus)
 
     if args.deterministic:
         set_deterministic(args.seed)

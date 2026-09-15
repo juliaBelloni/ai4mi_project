@@ -6,3 +6,4 @@ tqdm
 pillow
 scikit-image
 matplotlib
+torchio>=0.20,<1
