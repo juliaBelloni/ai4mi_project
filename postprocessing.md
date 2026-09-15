@@ -8,8 +8,9 @@ not individual slices or probability maps. Label `0` is background.
 `volumes/segthor/ce`, with one `<patient_id>.nii.gz` per patient. Filtering runs
 in memory after loading and before computing metrics. Each filter returns a
 copy with the original shape, dtype, and surviving class labels; discarded
-voxels become background. Ground truth and source files are not overwritten,
-and filtered volumes are not saved by these evaluation scripts.
+voxels become background. Ground truth and source files are not overwritten.
+By default, only metric CSVs are saved; `eval.py --save` also saves the evaluated
+prediction volumes after optional post-processing.
 
 ### Spatial alignment assumption
 
@@ -137,6 +138,32 @@ filtering, not which classes are scored. By default evaluation computes Dice,
 HD95, and average surface distance; use `--metrics dice` to evaluate Dice only.
 Each run writes per-patient/per-class scores and a corresponding `_summary.csv`.
 See [`metrics.md`](metrics.md) for metric definitions and other evaluation options.
+
+### Save the processed volumes
+
+Add `--save` to write one `<patient_id>.nii.gz` per patient. By default, a CSV
+destination of `results/segthor/ce/components_k2.csv` produces volumes in
+`results/segthor/ce/components_k2_volumes/`. Set `--save_folder` to choose another
+folder; this option requires `--save`:
+
+```sh
+python eval.py --pred_folder volumes/segthor/ce \
+    --gt_pattern 'data/segthor_part1/train/{id_}/GT.nii.gz' \
+    --postprocessing largest_connected_components --top_k 2 \
+    --dest results/segthor/ce/components_k2.csv \
+    --save --save_folder volumes/segthor/ce_k2
+```
+
+The saved labels are the predictions used to compute the metrics. Saving
+preserves the prediction's affine, qform/sform codes, voxel spacing, and header
+metadata; it does not copy ground-truth geometry or repair existing metadata
+discrepancies. Output paths matching the patient's prediction or ground truth
+are rejected. Existing files in the output folder are replaced, so use a
+different folder for each configuration you want to keep. With
+`--postprocessing none`, `--save` saves the unfiltered predictions.
+
+Python callers can pass `save_folder=Path(...)` to `evaluate_patient` or
+`evaluate_dataset`. The comparison script continues to save CSVs only.
 
 Python callers can pass any callable taking and returning a 3D label map to
 `evaluate_patient` or `evaluate_dataset`:
