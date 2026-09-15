@@ -2,16 +2,23 @@
 
 import argparse
 import csv
+from functools import partial
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 import numpy as np
 import nibabel as nib
 
 from utils import tqdm_
 from metrics import dice, hausdorff_distance_95, average_surface_distance
+from postprocessing import keep_largest_connected_components
 
 BACKGROUND_CLASS = 0
+
+# Add future techniques here; each callable takes and returns a 3D label map.
+POSTPROCESSORS = {
+    "largest_connected_components": keep_largest_connected_components,
+}
 
 # such that all metrics have same signature: (pred, gt, spacing, c)
 def _dice_c(pred: np.ndarray, gt: np.ndarray, spacing, c: int = 1) -> float:
@@ -53,9 +60,20 @@ def discover_classes(gt_paths: Sequence[Path]) -> list[int]:
     return sorted(classes)
 
 
-def evaluate_patient(patient_id: str, pred_path: Path, gt_path: Path, classes: Sequence[int], metrics: Sequence[str] = None) -> list[dict]:
+def evaluate_patient(patient_id: str, pred_path: Path, gt_path: Path, classes: Sequence[int], metrics: Sequence[str] = None,
+                     postprocess: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+                     save_folder: Optional[Path] = None) -> list[dict]:
 
-    pred_vol = load_volume(pred_path)
+    save_path = None
+    if save_folder is not None:
+        save_path = Path(save_folder) / pred_path.name
+        for source in (pred_path, gt_path):
+            if (save_path.resolve() == source.resolve()
+                    or (save_path.exists() and save_path.samefile(source))):
+                raise ValueError(f"Cannot overwrite an input volume: {save_path}")
+
+    pred_image = nib.load(str(pred_path))
+    pred_vol = np.asarray(pred_image.dataobj)
     gt_vol = load_volume(gt_path)
 
     assert pred_vol.shape == gt_vol.shape, (
@@ -64,6 +82,9 @@ def evaluate_patient(patient_id: str, pred_path: Path, gt_path: Path, classes: S
     )
 
     spacing = nib.load(str(gt_path)).header.get_zooms()[:3]
+
+    if postprocess is not None:
+        pred_vol = postprocess(pred_vol)
 
     if metrics is None:
         metrics = ["dice", "hausdorff_distance_95", "average_surface_distance"]
@@ -77,11 +98,21 @@ def evaluate_patient(patient_id: str, pred_path: Path, gt_path: Path, classes: S
             row[metric] = METRIC_FUNCS[metric](pred_vol, gt_vol, spacing, c=c)
         rows.append(row)
 
+    if save_path is not None:
+        # Keep prediction geometry; filtering does not resample or align voxels.
+        saved_image = pred_image.__class__(pred_vol, pred_image.affine, header=pred_image.header.copy())
+        saved_image.set_qform(*pred_image.get_qform(coded=True))
+        saved_image.set_sform(*pred_image.get_sform(coded=True))
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        nib.save(saved_image, str(save_path))
+
     return rows
 
 
 
-def evaluate_dataset(pred_folder: Path, gt_pattern: str, num_classes: Optional[int] = None, metrics: Sequence[str] = None) -> list[dict]:
+def evaluate_dataset(pred_folder: Path, gt_pattern: str, num_classes: Optional[int] = None, metrics: Sequence[str] = None,
+                     postprocess: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+                     save_folder: Optional[Path] = None) -> list[dict]:
 
     patient_ids = match_patients(pred_folder, gt_pattern)
 
@@ -95,7 +126,8 @@ def evaluate_dataset(pred_folder: Path, gt_pattern: str, num_classes: Optional[i
     for pid in tqdm_(patient_ids):
         pred_path = pred_folder / f"{pid}.nii.gz"
         gt_path = Path(gt_pattern.format(id_=pid))
-        rows.extend(evaluate_patient(pid, pred_path, gt_path, classes, metrics=metrics))
+        rows.extend(evaluate_patient(pid, pred_path, gt_path, classes, metrics=metrics,
+                                     postprocess=postprocess, save_folder=save_folder))
 
     return rows
 
@@ -138,7 +170,17 @@ def print_summary(summary: Sequence[dict], metrics: Sequence[str]) -> None:
 
 
 def main(args: argparse.Namespace) -> None:
-    rows = evaluate_dataset(args.pred_folder, args.gt_pattern, args.num_classes, args.metrics)
+    postprocess = None
+    if args.postprocessing != "none":
+        postprocess = partial(POSTPROCESSORS[args.postprocessing], k=args.top_k,
+                              connectivity=args.connectivity, classes=args.postprocessing_classes)
+    save_folder = None
+    if args.save:
+        save_folder = args.save_folder or args.dest.parent / f"{args.dest.stem}_volumes"
+    rows = evaluate_dataset(args.pred_folder, args.gt_pattern, args.num_classes, args.metrics,
+                            postprocess=postprocess, save_folder=save_folder)
+    if save_folder is not None:
+        print(f"Saved evaluated prediction volumes to {save_folder}")
 
     dest: Path = args.dest
     summary_dest = dest.with_name(f"{dest.stem}_summary{dest.suffix}")
@@ -169,11 +211,29 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--num_classes", type=int, default=None,
                         help="Total number of classes, including background. "
                              "If omitted, inferred from the ground-truth volumes.")
+    parser.add_argument("--postprocessing", choices=["none", *POSTPROCESSORS], default="none",
+                        help="Technique applied to predictions in memory before scoring (default: none).")
+    parser.add_argument("--top_k", type=int, default=1,
+                        help="Number of largest components to keep per selected class (default: 1).")
+    parser.add_argument("--connectivity", type=int, choices=[6, 18, 26], default=26,
+                        help="3D component neighborhood (default: 26, including corners).")
+    parser.add_argument("--postprocessing_classes", type=int, nargs="+", default=None,
+                        help="Labels to filter; defaults to all nonzero prediction labels.")
+    parser.add_argument("--save", action="store_true",
+                        help="Save evaluated predictions as .nii.gz files after optional post-processing.")
+    parser.add_argument("--save_folder", type=Path, default=None,
+                        help="Output volume folder (requires --save). Default: <dest stem>_volumes "
+                             "beside the results CSV. Existing output files are replaced.")
     parser.add_argument("--dest", type=Path, required=True,
                         help="Output path for the per-patient-per-class results CSV. "
                              "The per-class summary is saved alongside it as <dest>_summary.csv")
 
     args = parser.parse_args()
+
+    if args.top_k < 1:
+        parser.error("--top_k must be a positive integer")
+    if args.save_folder is not None and not args.save:
+        parser.error("--save_folder requires --save")
 
     print(args)
 
