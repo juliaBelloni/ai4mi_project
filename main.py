@@ -36,7 +36,7 @@ import numpy as np
 import torch.nn.functional as F
 from torch import nn, Tensor
 from torchvision import transforms
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 
 from functools import partial 
 
@@ -130,6 +130,25 @@ def compute_invfreq_weights(loader: DataLoader, K: int, idk: list[int], alpha: f
     weights = (counts.sum() / (K * (counts + 1e-8))) ** alpha
     return [weights[k].item() for k in idk]
 
+def compute_foreground_oversampling_weights(dataset: SliceDataset, target_fg_fraction: float) -> list[float]:
+    """To mitigate the problem that some images only contain background, we
+    oversample the images that do contain foreground. This computes the
+    per-sample weights needed for that:
+
+        r = p * n_bg / ((1 - p) * n_fg)
+
+    where p is the target fraction of samples per epoch that should contain
+    foreground, and n_bg/n_fg are the background-only/foreground-containing
+    sample counts."""
+    has_fg = [dataset.slice_has_foreground(i) for i in range(len(dataset))]
+    n_fg = sum(has_fg)
+    n_bg = len(has_fg) - n_fg
+    if n_fg == 0 or n_bg == 0:
+        return [1.0] * len(has_fg)
+
+    r = target_fg_fraction * n_bg / ((1 - target_fg_fraction) * n_fg)
+    return [r if fg else 1.0 for fg in has_fg]
+
 def save_config(args: argparse.Namespace) -> None:
     args.dest.mkdir(parents=True, exist_ok=True)
 
@@ -200,10 +219,18 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
         gt_transform=partial(gt_transform, K),
         debug=args.debug,
         context_slices=args.context_slices)
+
+    train_sampler = None
+    if args.oversample_foreground:
+        fg_weights = compute_foreground_oversampling_weights(train_set, args.oversample_foreground_percent)
+        train_sampler = WeightedRandomSampler(fg_weights, num_samples=len(train_set),
+                                              replacement=True, generator=generator)
+
     train_loader = DataLoader(train_set,
                               batch_size=B,
                               num_workers=5,
-                              shuffle=True,
+                              shuffle=(train_sampler is None),
+                              sampler=train_sampler,
                               worker_init_fn=worker_init_fn,
                               generator=generator)
 
@@ -433,6 +460,8 @@ def main():
     parser.add_argument('--deterministic', action='store_true', help="Enable deterministic PyTorch/CUDA behavior and seeded DataLoader shuffling.")
     parser.add_argument('--seed', default=0, type=int, help="Seed used when --deterministic is set.")
     parser.add_argument('--count_flops', action='store_true', help="Estimate train/validation FLOPs over 10 batches.")
+    parser.add_argument('--oversample_foreground', action='store_true', help="Enable foreground oversampling during training.")
+    parser.add_argument('--oversample_foreground_percent', default=0.5, type=float, help="Fraction of foreground-containing images to sample when --oversample_foreground is set.")
 
     args = parser.parse_args()
 

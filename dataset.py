@@ -28,7 +28,8 @@ from typing import Callable, Union
 from torch import Tensor
 from PIL import Image
 from torch.utils.data import Dataset
-import torch 
+import numpy as np
+import torch
 
 
 def make_dataset(root, subset) -> list[tuple[Path, Path | None]]:
@@ -90,6 +91,14 @@ class SliceDataset(Dataset):
 
     def __len__(self):
         return len(self.files)
+
+    def slice_has_foreground(self, index: int) -> bool:
+        """Checks whether a slice contains foreground (i.e. not only
+        background). Used for oversampling images with foreground."""
+        _, gt_path = self.files[index]
+        if gt_path is None:
+            return False
+        return bool(np.asarray(Image.open(gt_path)).any())
 
     def __getitem__(self, index) -> dict[str, Union[Tensor, int, str]]:
         img_path, gt_path = self.files[index]
