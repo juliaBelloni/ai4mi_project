@@ -289,6 +289,12 @@ def runTraining(args):
     else:
         raise ValueError(f"Invalid loss function {args.loss_fn}")
 
+    flops_count = estimate_flops(net, optimizer, loss_fn, train_loader, val_loader, device)  # pytorch FLOPs are estimates and mainly cover conv/matmul operations
+    save_flops_count(args.dest, flops_count)
+
+    if args.only_count_flops:
+        return
+
     # Notice one has the length of the _loader_, and the other one of the _dataset_
     log_loss_tra: Tensor = torch.zeros((args.epochs, len(train_loader)))
     log_dice_tra: Tensor = torch.zeros((args.epochs, len(train_loader.dataset), K))
@@ -409,9 +415,10 @@ def runTraining(args):
             print(f">>> Early stopping after {epochs_without_improvement} epochs without improvement")
             break
 
-    if args.count_flops: # pytorch FLOPs are estimates and mainly cover conv/matmul operations
-        flops_count = estimate_flops(net, optimizer, loss_fn, train_loader, val_loader, device, epochs_ran)
-        save_flops_count(args.dest, flops_count)
+    args.epochs_ran = epochs_ran
+    args.train_samples = len(train_loader.dataset)
+    args.val_samples = len(val_loader.dataset)
+    save_config(args)
 
 
 def main():
@@ -459,7 +466,7 @@ def main():
     parser.add_argument( '--early_stopping_min_delta', default=0.0, type=float,help="Minimum validation Dice improvement needed to reset early stopping.")
     parser.add_argument('--deterministic', action='store_true', help="Enable deterministic PyTorch/CUDA behavior and seeded DataLoader shuffling.")
     parser.add_argument('--seed', default=0, type=int, help="Seed used when --deterministic is set.")
-    parser.add_argument('--count_flops', action='store_true', help="Estimate train/validation FLOPs over 10 batches.")
+    parser.add_argument('--only_count_flops', action='store_true', help="Estimate FLOPs and exit without training.")
     parser.add_argument('--oversample_foreground', action='store_true', help="Enable foreground oversampling during training.")
     parser.add_argument('--oversample_foreground_percent', default=0.5, type=float, help="Fraction of foreground-containing images to sample when --oversample_foreground is set.")
 

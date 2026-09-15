@@ -28,7 +28,6 @@ from multiprocessing import Pool
 from contextlib import AbstractContextManager
 from typing import Callable, Iterable, List, Set, Tuple, TypeVar, cast
 import copy
-import gc
 import json
 
 import torch
@@ -202,11 +201,6 @@ def _profiler_flops(prof) -> int:
             total += event.flops
 
     return int(total)
- 
-
-def _clone_optimizer(optimizer, net: nn.Module):
-    optimizer_kwargs = copy.deepcopy(optimizer.defaults)  
-    return optimizer.__class__(net.parameters(), **optimizer_kwargs)
 
 
 def _profile_train_batch(net: nn.Module,optimizer, loss_fn,img: Tensor, gt: Tensor, device: torch.device) -> int:
@@ -234,70 +228,38 @@ def _profile_val_batch(net: nn.Module, img: Tensor, device: torch.device) -> int
     return _profiler_flops(prof)
 
 
-def estimate_flops(net: nn.Module, optimizer, loss_fn, train_loader, val_loader, device: torch.device, epochs_ran: int) -> dict:
-    profile_net = copy.deepcopy(net).to(device) # requires extra memory but does not change the orig model 
-    profile_optimizer = _clone_optimizer(optimizer, profile_net)
+def estimate_flops(net: nn.Module, optimizer, loss_fn, train_loader, val_loader, device: torch.device) -> dict:
+    initial_state = copy.deepcopy(net.state_dict())
 
-    train_batch_flops: list[int] = []
-    val_batch_flops: list[int] = []
-    train_batch_sizes: list[int] = []
-    val_batch_sizes: list[int] = []
+    train_sample_flops: list[float] = []
+    for i, data in enumerate(train_loader):
+        if i >= FLOPS_PROFILE_BATCHES:
+            break
 
-    try:
-        for i, data in enumerate(train_loader):
-            if i >= FLOPS_PROFILE_BATCHES:
-                break
+        img = data["images"].to(device)
+        gt = data["gts"].to(device)
 
-            img = data["images"].to(device)
-            gt = data["gts"].to(device) 
+        flops = _profile_train_batch(net, optimizer, loss_fn, img, gt, device)
+        train_sample_flops.append(flops / img.shape[0])
 
-            train_batch_flops.append(_profile_train_batch(profile_net, profile_optimizer, loss_fn, img, gt, device))
-            train_batch_sizes.append(img.shape[0]) 
+    val_sample_flops: list[float] = []
+    for i, data in enumerate(val_loader):
+        if i >= FLOPS_PROFILE_BATCHES:
+            break
 
-        for i, data in enumerate(val_loader):
-            if i >= FLOPS_PROFILE_BATCHES:
-                break
+        img = data["images"].to(device)
 
-            img = data["images"].to(device)
+        flops = _profile_val_batch(net, img, device)
+        val_sample_flops.append(flops / img.shape[0])
 
-            val_batch_flops.append(_profile_val_batch(profile_net,img, device)) 
-            val_batch_sizes.append(img.shape[0])
-    finally:
-        del profile_optimizer  # freeing memory
-        del profile_net
-        gc.collect() 
-        if device.type == "cuda": 
-            torch.cuda.empty_cache()
-
-    avg_train_batch_flops = float(np.mean(train_batch_flops)) if train_batch_flops else 0.0 
-    avg_val_batch_flops = float(np.mean(val_batch_flops)) if val_batch_flops else 0.0 
-    avg_train_batch_size = float(np.mean(train_batch_sizes)) if train_batch_sizes else 0.0  
-    avg_val_batch_size = float(np.mean(val_batch_sizes)) if val_batch_sizes else 0.0
-
-    train_flops_per_epoch = avg_train_batch_flops *len(train_loader)
-    val_flops_per_epoch = avg_val_batch_flops *len(val_loader) 
+    net.load_state_dict(initial_state)
+    del initial_state  
+    optimizer.state.clear()
 
     return {
-        "enabled": True,
-        "profiled_batches_per_split": FLOPS_PROFILE_BATCHES,
-        "profiled_train_batches": len(train_batch_flops),
-        "profiled_val_batches": len(val_batch_flops),
-        "epochs_ran": epochs_ran,
-        "train_batches_per_epoch": len(train_loader),
-        "val_batches_per_epoch": len(val_loader),
-        "train_samples": len(train_loader.dataset),
-        "val_samples": len(val_loader.dataset),
-        "avg_train_batch_size": avg_train_batch_size,
-        "avg_val_batch_size": avg_val_batch_size,
-        "avg_train_batch_flops": avg_train_batch_flops,
-        "avg_val_batch_flops": avg_val_batch_flops,
-        "avg_train_sample_flops": avg_train_batch_flops / avg_train_batch_size if avg_train_batch_size else 0.0,
-        "avg_val_sample_flops": avg_val_batch_flops / avg_val_batch_size if avg_val_batch_size else 0.0,
-        "estimated_train_flops_per_epoch": train_flops_per_epoch,
-        "estimated_val_flops_per_epoch": val_flops_per_epoch,
-        "estimated_total_train_flops": train_flops_per_epoch * epochs_ran,
-        "estimated_total_val_flops": val_flops_per_epoch * epochs_ran,
-        "estimated_total_run_flops": (train_flops_per_epoch + val_flops_per_epoch) * epochs_ran}
+        "flops_per_train_sample": float(np.mean(train_sample_flops)) if train_sample_flops else None,
+        "flops_per_val_sample": float(np.mean(val_sample_flops)) if val_sample_flops else None
+    }
 
 
 def save_flops_count(dest: Path, flops_count: dict) -> None:
