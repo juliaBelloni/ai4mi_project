@@ -9,8 +9,8 @@ __pycache__/
 projects
 .DS_Store
 
-.vscode/
 
 slurm_*.out
 
+.vscode/
 notebooks/
