@@ -88,3 +88,138 @@ def remove_small_components(volume: np.ndarray, min_size: int) -> np.ndarray:
         keep[0] = False
         result[mask & ~keep[components]] = 0
     return result
+
+
+def fill_holes(
+    volume: np.ndarray,
+    classes: Optional[Sequence[int]] = None,
+    connectivity: int = 6,
+) -> np.ndarray:
+    """Fill enclosed 3D cavities per class using scipy.ndimage.binary_fill_holes.
+
+    Connectivity (6, 18, or 26) describes the background paths to the volume
+    boundary. Only original background voxels can be filled; existing class
+    labels are preserved. If multiple selected classes claim the same cavity
+    voxel (e.g. nested shells), leave it as background rather than choosing a
+    class by iteration order. Returns a copy of the input shape and dtype.
+    """
+    volume = _validate_volume(volume)
+    if connectivity not in (6, 18, 26):
+        raise ValueError("connectivity must be 6, 18, or 26.")
+    selected = np.unique(volume) if classes is None else np.unique(classes)
+    structure = ndimage.generate_binary_structure(3, {6: 1, 18: 2, 26: 3}[connectivity])
+    background = volume == 0
+    claimed = np.zeros(volume.shape, dtype=bool)
+    result = volume.copy()
+    for c in selected:
+        if c == 0:
+            continue
+        mask = volume == c
+        if not mask.any():
+            continue
+        candidates = ndimage.binary_fill_holes(mask, structure=structure) & background
+        result[candidates & ~claimed] = c
+        result[candidates & claimed] = 0
+        claimed |= candidates
+    return result
+
+
+def _morphological_cleanup(volume, operation, iterations, classes, connectivity):
+    volume = _validate_volume(volume)
+    _validate_positive_integer(iterations, "iterations")
+    if connectivity not in (6, 18, 26):
+        raise ValueError("connectivity must be 6, 18, or 26.")
+    structure = ndimage.generate_binary_structure(3, {6: 1, 18: 2, 26: 3}[connectivity])
+    selected = np.unique(volume) if classes is None else np.unique(classes)
+    result = volume.copy()
+    background = volume == 0
+    claimed = np.zeros(volume.shape, dtype=bool) if operation == "closing" else None
+    for c in selected:
+        if c == 0:
+            continue
+        mask = volume == c
+        if not mask.any():
+            continue
+        if operation == "opening":
+            opened = ndimage.binary_opening(mask, structure=structure, iterations=iterations)
+            result[mask & ~opened] = 0
+        else:
+            # Allow dilation outside the image before erosion, so closing does
+            # not accidentally erase foreground touching the image boundary.
+            padded = np.pad(mask, iterations, mode="constant")
+            closed = ndimage.binary_closing(padded, structure=structure, iterations=iterations)
+            crop = (slice(iterations, -iterations),) * 3
+            candidates = closed[crop] & background
+            result[candidates & ~claimed] = c
+            result[candidates & claimed] = 0
+            claimed |= candidates
+    return result
+
+
+def opening(
+    volume: np.ndarray,
+    iterations: int = 1,
+    classes: Optional[Sequence[int]] = None,
+    connectivity: int = 6,
+) -> np.ndarray:
+    """Per-class 3D binary erosion followed by dilation, using SciPy.
+
+    Apply `iterations` erosions then the same number of dilations with a
+    6-, 18-, or 26-neighbor structuring element. Only remove original voxels
+    of selected classes; preserve all other labels. Outside the image is
+    background. Returns a copy with the original shape and dtype.
+    """
+    return _morphological_cleanup(volume, "opening", iterations, classes, connectivity)
+
+
+def closing(
+    volume: np.ndarray,
+    iterations: int = 1,
+    classes: Optional[Sequence[int]] = None,
+    connectivity: int = 6,
+) -> np.ndarray:
+    """Per-class 3D binary dilation followed by erosion, using SciPy.
+
+    Apply `iterations` dilations then the same number of erosions. Pad with
+    background before the operation to preserve boundary-touching labels.
+    Only fill original background voxels. Preserve existing labels and leave
+    competing class claims as background. Returns a copy of the input.
+    """
+    return _morphological_cleanup(volume, "closing", iterations, classes, connectivity)
+
+
+def salt_and_pepper(
+    volume: np.ndarray,
+    kernel_size: int = 3,
+    classes: Optional[Sequence[int]] = None,
+) -> np.ndarray:
+    """Denoise each selected class with a 3D binary median filter.
+
+    Use an odd cubic window (default 3x3x3) with nearest-edge padding. Remove
+    class voxels rejected by its binary median and fill original background
+    voxels accepted by it. Never directly replace one foreground label with
+    another. All masks come from the original volume, so class order has no
+    effect. An odd-window binary median requires a strict majority; two
+    different classes cannot both claim the same background voxel.
+
+    Returns a copy with the original shape and dtype. kernel_size=1 is a no-op.
+    """
+    volume = _validate_volume(volume)
+    _validate_positive_integer(kernel_size, "kernel_size")
+    if kernel_size % 2 == 0:
+        raise ValueError("kernel_size must be odd.")
+    result = volume.copy()
+    if kernel_size == 1:
+        return result
+    selected = np.unique(volume) if classes is None else np.unique(classes)
+    background = volume == 0
+    for c in selected:
+        if c == 0:
+            continue
+        mask = volume == c
+        if not mask.any():
+            continue
+        filtered = ndimage.median_filter(mask, size=kernel_size, mode="nearest")
+        result[mask & ~filtered] = 0
+        result[background & filtered] = c
+    return result
