@@ -1,14 +1,17 @@
 # Segmentation post-processing
 
-Post-processing removes selected connected regions from predicted segmentation
-masks before evaluation. The functions operate on full 3D NumPy label maps,
+Post-processing refines predicted segmentation masks before evaluation by
+removing components, filling enclosed holes, or applying morphological opening
+and closing, or denoising salt-and-pepper artifacts. The functions operate on full 3D NumPy label maps,
 not individual slices or probability maps. Label `0` is background.
 
 [`eval.py`](eval.py) loads compressed NIfTI files directly from a folder such as
 `volumes/segthor/ce`, with one `<patient_id>.nii.gz` per patient. Filtering runs
 in memory after loading and before computing metrics. Each filter returns a
 copy with the original shape, dtype, and surviving class labels; discarded
-voxels become background. Ground truth and source files are not overwritten.
+voxels become background for component removal and opening, while hole filling
+and closing can assign background voxels to a class. Salt-and-pepper denoising
+can both remove and add voxels. Ground truth and source files are not overwritten.
 By default, only metric CSVs are saved; `eval.py --save` also saves the evaluated
 prediction volumes after optional post-processing.
 
@@ -105,6 +108,155 @@ spacing. This method can remove small valid structures as well as false positive
 It is available in the comparison script and through the Python callable
 interface, but is not an `eval.py` CLI choice.
 
+### Fill holes per class
+
+Implemented as `fill_holes(volume, classes=None, connectivity=6)` in
+[`postprocessing.py`](postprocessing.py), using `scipy.ndimage.binary_fill_holes`.
+Enable it with `--postprocessing fill_holes`.
+
+For each selected class, treat its voxels as a binary mask and identify cavities
+that cannot reach the boundary of the volume through the complement of that
+mask. Fill those cavities only where the original segmentation is background
+(`0`). Existing labels, including other organs inside a cavity, are preserved.
+The function returns a copy with the original shape and dtype.
+
+This is a **3D** operation: an apparent hole in one slice is not filled if it
+has a path to the outside through another slice. It does not close open gaps,
+smooth boundaries, or remove disconnected blobs. There is no hole-size limit;
+all unambiguous enclosed cavities are filled, including large ones.
+
+| Python parameter | CLI option | Default | Meaning |
+|---|---|---|---|
+| `classes` | `--postprocessing_classes` | `None` | Fill holes for all nonzero prediction labels, or only the supplied labels. Background and absent labels are skipped. |
+| `connectivity` | `--connectivity` | `6` | Neighborhood used for background paths to the boundary: 6, 18, or 26. This matches SciPy's default face-connected background. |
+
+With 26-connectivity, even a corner-connected escape path prevents filling;
+with 6-connectivity, only face-connected paths prevent filling. Thus increasing
+this parameter can leave more cavities unfilled. `--top_k` applies only to
+component filtering and has no effect on hole filling.
+
+If two selected classes both enclose the same background voxel (for example,
+nested shells), it remains background. This avoids assigning ambiguous voxels
+according to class-processing order. Duplicate labels in `classes` have no effect.
+Real anatomical cavities can also be filled, so compare validation scores before
+choosing this method.
+
+```sh
+python eval.py --pred_folder volumes/segthor/ce \
+    --gt_pattern 'data/segthor_part1/train/{id_}/GT.nii.gz' \
+    --postprocessing fill_holes --connectivity 6 \
+    --dest results/segthor/ce/fill_holes.csv \
+    --save --save_folder volumes/segthor/ce_filled
+```
+
+Omit `--save` and `--save_folder` to evaluate without writing volumes. For Python
+callers, use `postprocess=partial(fill_holes, classes=[1, 2], connectivity=6)`
+with `evaluate_patient` or `evaluate_dataset`.
+
+### Morphological opening per class
+
+Implemented as `opening(volume, iterations=1, classes=None, connectivity=6)`
+using `scipy.ndimage.binary_opening`. Select it with `--postprocessing opening`.
+
+Opening first erodes each selected class mask, then dilates the remaining mask.
+It can remove isolated specks, thin protrusions, and narrow connections.
+Only original voxels of the selected class can be removed; they become
+background. Other classes are preserved. Thin valid structures can disappear,
+and even large objects can lose boundary details.
+
+### Morphological closing per class
+
+Implemented as `closing(volume, iterations=1, classes=None, connectivity=6)`
+using `scipy.ndimage.binary_closing`. Select it with `--postprocessing closing`.
+
+Closing first dilates each selected class mask, then erodes it. It can bridge
+narrow gaps and fill small cavities or indentations, including gaps open to the
+outside. Unlike hole filling, it does not fill every enclosed cavity regardless
+of size. It may also merge nearby regions that should remain separate.
+
+Only original background voxels can be assigned a class; all existing labels
+are preserved. If multiple classes propose the same background voxel, it stays
+background, independent of class order. This conservative multi-class rule can
+leave gaps that separate binary closings would each fill.
+
+Both operations treat space outside the image as background. Closing pads the
+mask by `iterations` voxels before processing, then crops back to the input
+shape. This prevents the artificial boundary erosion that an unpadded closing
+can cause. Both return a copy with the original shape and dtype.
+
+#### Opening and closing hyperparameters
+
+| Python parameter | CLI option | Default | Meaning |
+|---|---|---|---|
+| `iterations` | `--iterations` | `1` | Positive integer; number of steps in **each stage**. Opening with 2 means two erosions followed by two dilations, not two complete opening operations. Closing reverses that order. Larger values act over a larger neighborhood. |
+| `connectivity` | `--connectivity` | `6` | Structuring element: center plus 6 face neighbors, 18 face/edge neighbors, or all 26 neighbors (a full 3×3×3 cube). |
+| `classes` | `--postprocessing_classes` | `None` | Process all nonzero labels, or only those supplied. Background, absent labels, and duplicate selections have no additional effect. |
+
+The neighborhood is measured in voxels, not millimeters; anisotropic voxel
+spacing makes its physical extent different along different axes. `--top_k`
+has no effect on either operation. Each evaluation run applies one selected
+method; these flags do not chain opening and closing.
+
+```sh
+python eval.py --pred_folder volumes/segthor/ce \
+    --gt_pattern 'data/segthor_part1/train/{id_}/GT.nii.gz' \
+    --postprocessing opening --iterations 1 --connectivity 6 \
+    --dest results/segthor/ce/opening.csv --save
+
+python eval.py --pred_folder volumes/segthor/ce \
+    --gt_pattern 'data/segthor_part1/train/{id_}/GT.nii.gz' \
+    --postprocessing closing --iterations 1 --connectivity 6 \
+    --dest results/segthor/ce/closing.csv --save
+```
+
+Python callers can use `postprocess=partial(opening, iterations=1)` or
+`postprocess=partial(closing, iterations=1)` with the evaluation functions.
+
+### Salt-and-pepper denoising per class
+
+Implemented as `salt_and_pepper(volume, kernel_size=3, classes=None)` using
+`scipy.ndimage.median_filter`. Select it with `--postprocessing salt_and_pepper`.
+
+Apply a 3D median filter to each selected class's **binary mask**, rather than
+to numeric class IDs (whose ordering has no anatomical meaning). In a 3×3×3
+window, the center is assigned foreground only if at least 14 of its 27 samples
+belong to that class. This can remove isolated foreground specks (salt) and
+fill small background gaps inside foreground regions (pepper).
+
+Rejected voxels of a selected class become background. Accepted voxels are
+added only where the original volume was background. Existing foreground labels
+are never directly reassigned to a different class; a selected class can still
+lose its own voxels. Unselected classes are unchanged. Every mask is computed
+from the original input, so class order and duplicate selections have no effect.
+With the same odd-sized window, two classes cannot both have a strict majority
+at the same voxel.
+
+| Python parameter | CLI option | Default | Meaning |
+|---|---|---|---|
+| `kernel_size` | `--kernel_size` | `3` | Positive odd side length in voxels of the cubic window. `3` gives 3×3×3; `5` gives 5×5×5. `1` returns an unchanged copy. Larger windows smooth more aggressively and cost more computation. |
+| `classes` | `--postprocessing_classes` | `None` | Process all nonzero labels, or only those supplied. Background and absent labels are skipped. |
+
+The filter uses nearest-edge padding: locations outside the image repeat the
+nearest boundary voxel. Window size is measured in voxels, not millimeters.
+Thin valid structures and small organs can be removed, and boundaries can
+shrink. A wrong foreground label inside another organ may become background
+rather than being reassigned to that organ under the conservative label rule.
+
+`--connectivity` is not applicable and is rejected for this method; `--top_k`
+and `--iterations` do not affect it. The function returns a copy with the input
+shape and dtype.
+
+```sh
+python eval.py --pred_folder volumes/segthor/ce \
+    --gt_pattern 'data/segthor_part1/train/{id_}/GT.nii.gz' \
+    --postprocessing salt_and_pepper --kernel_size 3 \
+    --dest results/segthor/ce/salt_and_pepper.csv --save
+```
+
+Python callers can use `postprocess=partial(salt_and_pepper, kernel_size=3)`
+with either evaluation function. Saved `.nii.gz` volumes retain prediction
+metadata, following the same `--save` / `--save_folder` behavior as other methods.
+
 ## Connectivity
 
 | Value | Neighbor relationship in 3D |
@@ -115,7 +267,11 @@ interface, but is not an `eval.py` CLI choice.
 
 Larger neighborhoods can join regions that would be separate under a smaller
 neighborhood. Connectivity is defined on the voxel grid, not by a physical
-distance in millimeters. All variants in the current comparison use `26`.
+distance in millimeters. Component filtering uses this neighborhood to connect
+foreground voxels; hole filling uses it to connect the background of each class
+mask. Opening and closing use it to construct the erosion/dilation neighborhood.
+The existing component comparison uses `26`; hole filling, opening, and closing
+default to `6`.
 
 ## Evaluate a method
 
@@ -200,6 +356,9 @@ per-class minimum sizes of 10, 100, and 1,000 voxels. These settings are defined
 in the script's `methods` construction, not exposed as CLI flags. Its three CLI
 options select the prediction folder, ground-truth pattern, and output folder;
 the defaults match the command above.
+
+Hole filling, opening, closing, and salt-and-pepper denoising are available in `eval.py` but are not
+included in this comparison script.
 
 It computes **Dice only** and writes `per_patient.csv` and `summary.csv`.
 The summary includes mean Dice per class, the mean over all patient/class pairs,

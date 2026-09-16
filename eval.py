@@ -11,13 +11,17 @@ import nibabel as nib
 
 from utils import tqdm_
 from metrics import dice, hausdorff_distance_95, average_surface_distance
-from postprocessing import keep_largest_connected_components
+from postprocessing import keep_largest_connected_components, fill_holes, opening, closing, salt_and_pepper
 
 BACKGROUND_CLASS = 0
 
 # Add future techniques here; each callable takes and returns a 3D label map.
 POSTPROCESSORS = {
     "largest_connected_components": keep_largest_connected_components,
+    "fill_holes": fill_holes,
+    "opening": opening,
+    "closing": closing,
+    "salt_and_pepper": salt_and_pepper,
 }
 
 # such that all metrics have same signature: (pred, gt, spacing, c)
@@ -172,8 +176,16 @@ def print_summary(summary: Sequence[dict], metrics: Sequence[str]) -> None:
 def main(args: argparse.Namespace) -> None:
     postprocess = None
     if args.postprocessing != "none":
-        postprocess = partial(POSTPROCESSORS[args.postprocessing], k=args.top_k,
-                              connectivity=args.connectivity, classes=args.postprocessing_classes)
+        options = {"classes": args.postprocessing_classes}
+        if args.connectivity is not None and args.postprocessing != "salt_and_pepper":
+            options["connectivity"] = args.connectivity
+        if args.postprocessing == "largest_connected_components":
+            options["k"] = args.top_k
+        if args.postprocessing in ("opening", "closing"):
+            options["iterations"] = args.iterations
+        if args.postprocessing == "salt_and_pepper":
+            options["kernel_size"] = args.kernel_size
+        postprocess = partial(POSTPROCESSORS[args.postprocessing], **options)
     save_folder = None
     if args.save:
         save_folder = args.save_folder or args.dest.parent / f"{args.dest.stem}_volumes"
@@ -214,9 +226,14 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--postprocessing", choices=["none", *POSTPROCESSORS], default="none",
                         help="Technique applied to predictions in memory before scoring (default: none).")
     parser.add_argument("--top_k", type=int, default=1,
-                        help="Number of largest components to keep per selected class (default: 1).")
-    parser.add_argument("--connectivity", type=int, choices=[6, 18, 26], default=26,
-                        help="3D component neighborhood (default: 26, including corners).")
+                        help="Number of components per class for largest_connected_components only (default: 1).")
+    parser.add_argument("--connectivity", type=int, choices=[6, 18, 26], default=None,
+                        help="3D neighborhood / morphology structuring element. "
+                             "Defaults: 26 for largest_connected_components, 6 for fill_holes/opening/closing.")
+    parser.add_argument("--iterations", type=int, default=1,
+                        help="Positive number of erosion/dilation steps per stage for opening/closing only (default: 1).")
+    parser.add_argument("--kernel_size", type=int, default=3,
+                        help="Odd positive cubic window width for salt_and_pepper only (default: 3 voxels).")
     parser.add_argument("--postprocessing_classes", type=int, nargs="+", default=None,
                         help="Labels to filter; defaults to all nonzero prediction labels.")
     parser.add_argument("--save", action="store_true",
@@ -232,6 +249,12 @@ def get_args() -> argparse.Namespace:
 
     if args.top_k < 1:
         parser.error("--top_k must be a positive integer")
+    if args.iterations < 1:
+        parser.error("--iterations must be a positive integer")
+    if args.kernel_size < 1 or args.kernel_size % 2 == 0:
+        parser.error("--kernel_size must be a positive odd integer")
+    if args.postprocessing == "salt_and_pepper" and args.connectivity is not None:
+        parser.error("salt_and_pepper uses --kernel_size, not --connectivity")
     if args.save_folder is not None and not args.save:
         parser.error("--save_folder requires --save")
 
