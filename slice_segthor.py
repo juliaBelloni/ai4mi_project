@@ -40,8 +40,23 @@ from skimage.transform import resize
 from utils import map_, tqdm_
 
 
-def norm_arr(img: np.ndarray, hu_min=None, hu_max=None) -> np.ndarray:
+def norm_arr(img: np.ndarray, hu_min=None, hu_max=None, use_clahe: bool = False) -> np.ndarray:
     casted = img.astype(np.float32)
+    if use_clahe:
+        from skimage.exposure import equalize_adapthist
+
+        # Clip to a broad physiological range first so outliers (metal, scanner table)
+        # don't skew the local histogram in whichever tile they land in.
+        clip_min, clip_max = -1000.0, 300.0
+        rescaled = (np.clip(casted, clip_min, clip_max) - clip_min) / (clip_max - clip_min)
+
+        # 2D per axial slice: the network only ever sees one slice at a time, so there's
+        # no benefit to 3D-aware tiling, only extra compute.
+        equalized = np.empty_like(rescaled)
+        for idz in range(rescaled.shape[2]):
+            equalized[:, :, idz] = equalize_adapthist(rescaled[:, :, idz], clip_limit=0.01)
+        return (255 * equalized).astype(np.uint8)
+
     if hu_min is not None:
         import torchio as tio
 
@@ -149,7 +164,7 @@ def split_merged_aorta_esophagus(gt: np.ndarray, r: int = 4) -> np.ndarray:
 
 
 def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int, int],
-                  test_mode: bool = False, hu_min=None, hu_max=None,
+                  test_mode: bool = False, hu_min=None, hu_max=None, use_clahe: bool = False,
                   target_spacing=None, fix_aorta_esophagus: bool = False) -> tuple[float, float, float]:
     id_path: Path = source_path / ("train" if not test_mode else "test") / id_
 
@@ -174,7 +189,7 @@ def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int
     else:
         gt = np.zeros_like(ct, dtype=np.uint8)
 
-    norm_ct: np.ndarray = norm_arr(ct, hu_min, hu_max)
+    norm_ct: np.ndarray = norm_arr(ct, hu_min, hu_max, use_clahe)
 
     to_slice_ct = norm_ct
     to_slice_gt = gt
@@ -271,6 +286,7 @@ def main(args: argparse.Namespace):
                                  test_mode=mode == 'test',
                                  hu_min=args.hu_min,
                                  hu_max=args.hu_max,
+                                 use_clahe=args.clahe,
                                  target_spacing=args.target_spacing,
                                  fix_aorta_esophagus=args.fix_aorta_esophagus)
         resolutions: list[tuple[float, float, float]]
@@ -299,6 +315,10 @@ def get_args() -> argparse.Namespace:
     parser.add_argument('--shape', type=int, nargs="+", default=[256, 256])
     parser.add_argument('--hu_min', type=float, default=None, help='HU window lower bound; requires --hu_max.')
     parser.add_argument('--hu_max', type=float, default=None, help='HU window upper bound; requires --hu_min.')
+    parser.add_argument('--clahe', action='store_true',
+                        help='Clip to [-1000, 300] HU then apply CLAHE (2D per-slice) instead of '
+                             'linear normalization. Mutually exclusive with --hu_min/--hu_max. '
+                             'Default: off.')
     parser.add_argument('--target_spacing', type=float, default=None,
                         help='Resample in-plane to this physical spacing (mm/pixel) before '
                              'center-crop/pad to --shape. Default: no resampling (baseline), '
@@ -320,6 +340,8 @@ def get_args() -> argparse.Namespace:
     if args.hu_min is not None and not (np.isfinite(args.hu_min) and np.isfinite(args.hu_max)
                                         and args.hu_min < args.hu_max):
         parser.error('HU bounds must be finite, with --hu_min < --hu_max')
+    if args.clahe and args.hu_min is not None:
+        parser.error('--clahe and --hu_min/--hu_max are mutually exclusive normalization choices')
     if args.target_spacing is not None and not (np.isfinite(args.target_spacing)
                                                  and args.target_spacing > 0):
         parser.error('--target_spacing must be a finite positive number')

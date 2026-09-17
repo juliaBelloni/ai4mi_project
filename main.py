@@ -425,7 +425,7 @@ def runTraining(args):
     save_config(args)
 
 
-def ensure_smoke_data(data_dir: Path, source_dir: Path, hu_min=None, hu_max=None,
+def ensure_smoke_data(data_dir: Path, source_dir: Path, hu_min=None, hu_max=None, use_clahe=False,
                       target_spacing=None, fix_aorta_esophagus=False):
     """Create smoke data only if its directory does not exist."""
     if data_dir.exists():
@@ -437,6 +437,8 @@ def ensure_smoke_data(data_dir: Path, source_dir: Path, hu_min=None, hu_max=None
                '--source_dir', str(source_dir), '--dest_dir', str(data_dir), '--test_pipeline']
     if hu_min is not None:
         command += ['--hu_min', str(hu_min), '--hu_max', str(hu_max)]
+    if use_clahe:
+        command += ['--clahe']
     if target_spacing is not None:
         command += ['--target_spacing', str(target_spacing)]
     if fix_aorta_esophagus:
@@ -461,6 +463,10 @@ def main():
                         help='Smoke preprocessing HU lower bound; requires --hu_max and a fresh --data_dir.')
     parser.add_argument('--hu_max', type=float, default=None,
                         help='Smoke preprocessing HU upper bound; requires --hu_min.')
+    parser.add_argument('--clahe', action='store_true',
+                        help='Smoke preprocessing: clip to [-1000, 300] then CLAHE instead of '
+                             'linear normalization. Mutually exclusive with --hu_min/--hu_max. '
+                             'Default off; requires a fresh --data_dir.')
     parser.add_argument('--target_spacing', type=float, default=None,
                         help='Smoke preprocessing target in-plane spacing (mm/pixel); '
                              'requires a fresh --data_dir, same as --hu_min/--hu_max.')
@@ -526,6 +532,8 @@ def main():
     if args.hu_min is not None and not (np.isfinite(args.hu_min) and np.isfinite(args.hu_max)
                                         and args.hu_min < args.hu_max):
         parser.error('HU bounds must be finite, with --hu_min < --hu_max')
+    if args.clahe and args.hu_min is not None:
+        parser.error('--clahe and --hu_min/--hu_max are mutually exclusive normalization choices')
     if args.dataset is None:
         args.dataset = 'SEGTHOR' if args.test_pipeline else 'TOY2'
     if args.dest is None:
@@ -538,7 +546,7 @@ def main():
         if args.dataset == 'SEGTHOR':
             if args.data_dir is None:
                 args.data_dir = Path('data/SEGTHOR_smoke')
-            ensure_smoke_data(args.data_dir, args.source_dir, args.hu_min, args.hu_max,
+            ensure_smoke_data(args.data_dir, args.source_dir, args.hu_min, args.hu_max, args.clahe,
                               args.target_spacing, args.fix_aorta_esophagus)
 
     if args.deterministic:
