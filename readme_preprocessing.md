@@ -67,6 +67,18 @@ Use a fresh `--data_dir` when changing bounds: the simple smoke cache checks onl
 whether the directory exists. The same HU flags also work directly in `slice_segthor.py`.
 The notebook compares candidate windows; these example bounds are not automatic defaults.
 
+## Added flag: `--clahe`
+
+Alternative to `--hu_min`/`--hu_max`. Clips to `[-1000, 300]` HU, then applies
+CLAHE (local adaptive contrast equalization) per slice instead of a single
+global rescale — can bring out soft-tissue edges that a linear rescale
+flattens out. Mutually exclusive with `--hu_min`/`--hu_max`. Off by default.
+
+```bash
+python slice_segthor.py --source_dir data/segthor_part1 --dest_dir data/SEGTHOR_clahe \
+  --shape 256 256 --clahe --retains 5
+```
+
 # Training-time slice filtering
 
 ## Added flag: `--drop_empty_slices`
