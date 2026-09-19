@@ -293,15 +293,26 @@ class Balance():
 
     Xu et al. (2025): ./papers/09125-XuF.pdf, ./papers/losses.md"""
 
-    def __init__(self, idk: list[int], alpha: float = 0.5, t: float = 0.9, normalized: bool = False):
+    def __init__(self, idk: list[int], alpha: float = 0.5, t: float = 0.9, normalized: bool = False,
+                fallback_epoch: int | None = None):
         self.idk = idk
         self.alpha = alpha
         self.t = t
         self.normalized = normalized
+        self.fallback_epoch = fallback_epoch
         self.inter = InterCBL(idk, normalized=normalized)
         self.intra = IntraCBL(idk, t=t, normalized=normalized)
         self._converged = False
-        print(f"Initialized {self.__class__.__name__} with {idk=}, alpha={alpha}, t={t}, normalized={normalized}")
+        print(f"Initialized {self.__class__.__name__} with {idk=}, alpha={alpha}, t={t}, "
+              f"normalized={normalized}, fallback_epoch={fallback_epoch}")
+
+    def on_epoch_end(self, epoch: int) -> None:
+        """Call once per training epoch (not per batch). Forces convergence if the
+        paper's natural criterion hasn't triggered by `fallback_epoch`."""
+        if not self._converged and self.fallback_epoch is not None and epoch >= self.fallback_epoch:
+            self._converged = True
+            print(f">> Balance fallback: forcing InterCBL on at epoch {epoch} "
+                  f"(--balance_fallback_epoch={self.fallback_epoch}, natural criterion never triggered)")
 
     @torch.no_grad()
     def step(self, pred_softmax: Tensor, weak_target: Tensor) -> None:
@@ -344,7 +355,10 @@ class Balance():
                 hardest, _ = torch.topk(bg_p, k, largest=False) # (k,), the k hardest background pixels
                 bg_ok = bool(hardest.max() > self.t)
 
-            ready += int(fg_ok and bg_ok) 
+            ready += int(fg_ok and bg_ok)
+
+        ready_frac = ready / B
+        print(f">> Balance convergence check: {ready}/{B} images ready ({ready_frac:.0%}, need >50%)")
 
         if ready > B / 2:
             self._converged = True

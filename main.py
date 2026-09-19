@@ -289,7 +289,14 @@ def runTraining(args):
     elif args.loss_fn == "dicece":
         loss_fn = DiceCE(idk=idk, lambda_=args.dicece_lambda, weight=ce_weights)
     elif args.loss_fn == "balance":
-        loss_fn = Balance(idk=idk, alpha=args.balance_alpha, t=args.balance_t, normalized=args.balance_normalized)
+        if args.balance_fallback_epoch == -1:
+            fallback_epoch = max(1, args.epochs // 2)
+        elif args.balance_fallback_epoch == 0:
+            fallback_epoch = None
+        else:
+            fallback_epoch = args.balance_fallback_epoch
+        loss_fn = Balance(idk=idk, alpha=args.balance_alpha, t=args.balance_t,
+                          normalized=args.balance_normalized, fallback_epoch=fallback_epoch)
     else:
         raise ValueError(f"Invalid loss function {args.loss_fn}")
 
@@ -377,6 +384,9 @@ def runTraining(args):
                         postfix_dict |= {f"Dice-{k}": f"{log_dice[e, :j, k].mean():05.3f}"
                                          for k in range(1, K)}
                     tq_iter.set_postfix(postfix_dict)
+
+        if isinstance(loss_fn, Balance):
+            loss_fn.on_epoch_end(e)
 
         # I save it at each epochs, in case the code crashes or I decide to stop it early
         np.save(args.dest / "loss_tra.npy", log_loss_tra)
@@ -502,6 +512,10 @@ def main():
     parser.add_argument('--balance_normalized', action='store_true',
                         help="Normalize Inter-CBL and Intra-CBL so it is a actual average, so that "
                              "the weights sum to one (not part of Xu et al. 2025, but could help).")
+    parser.add_argument('--balance_fallback_epoch', default=-1, type=int,
+                        help="Force InterCBL on if the paper's natural convergence criterion "
+                             "hasn't triggered by this epoch. Value -1 means epochs // 2. "
+                             "0 disables the fallback (paper-only convergence).")
     parser.add_argument('--opt', choices=["adam", "adamw"], default="adam", help="Optimizer used during training.")
     parser.add_argument('--lr', default=0.0005, type=float, help="Learning rate used during training.")
     parser.add_argument( '--context_slices', default=0, type=int, help="Number of neighboring slices before and after the current slice. 0 keeps 2D behavior.")
