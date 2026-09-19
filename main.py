@@ -540,6 +540,8 @@ def main():
         if not args.test_pipeline:
             parser.error('--dest is required unless --test_pipeline is set')
         args.dest = Path('results') / args.dataset.lower() / 'smoke_run'
+    elif args.dest.exists() and not args.test_pipeline:
+        parser.error(f'--dest {args.dest} already exists. Pick a new --dest or remove the old one first.')
     if args.test_pipeline:
         args.epochs = 1
         print('Smoke run: one training/validation epoch (--epochs is overridden).')
