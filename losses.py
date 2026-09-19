@@ -335,7 +335,7 @@ class Balance():
             bg_p = p_corr[b][bg[b]] # (|bg|,), background pixels of image b
             f = fg_p.numel() # |fg|, foreground pixel count for image b
 
-            fg_ok = f == 0 or bool(fg_p.min() > self.t)
+            fg_ok = f == 0 or bool(fg_p.max() > self.t)
 
             k = min(f, bg_p.numel())
             if k == 0:
