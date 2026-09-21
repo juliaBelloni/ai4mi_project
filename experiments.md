@@ -20,16 +20,16 @@ ASD are better.
 | Loss reference | L0 | Selected P1 + D1 + C2 pipeline with plain CE | 0.640 | 17.419 | 4.315 | Completed by C2; no duplicate L0 run is needed |
 | Loss | L1 | L0 with CE and `--ce_weights invfreq --ce_weights_alpha 0.5` | 0.656 | 26.908 | 5.013 | Completed; modest Dice gain, substantially worse surface distances |
 | Loss | L2 | L0 with Dice | 0.501 | 140.135 | 47.757 | Completed; rejected due to severe segmentation and boundary degradation |
-| Loss | L3 | L0 with DiceCE and `--dicece_lambda 0.5` | **0.688** | 20.471 | 4.116 | Completed; best macro Dice, retained as a strong alternative |
-| Loss | L4 | L0 with Balance, `alpha=0.5`, `t=0.9`, and automatic halfway fallback | 0.683 | **15.631** | **3.788** | **Selected loss** for the next stage; best HD95 and ASD with near-best Dice |
+| Loss | L3 | L0 with DiceCE and `--dicece_lambda 0.5` | 0.688 | 20.471 | 4.116 | Completed; better Dice than L4, but not selected after L6 |
+| Loss | L4 | L0 with Balance, `alpha=0.5`, `t=0.9`, and automatic halfway fallback | 0.683 | 15.631 | 3.788 | Completed; retained as the unnormalized Balance reference |
 | Loss follow-up | L5 | Weighted DiceCE | - | - | - | Deferred; weighted CE did not improve the overall trade-off enough to justify combining it with DiceCE yet |
-| Loss follow-up | L6 | L4 with `--balance_normalized` | - | - | - | Next; isolated normalization check at LR `5e-4` |
-| Learning rate | T1 | L4 pipeline with Adam and LR `1e-4` | - | - | - | Ready if L4 remains selected after L6; lower-LR comparison against L4 at `5e-4` |
-| Learning rate | T2 | L4 pipeline with Adam and LR `1e-3` | - | - | - | Ready if L4 remains selected after L6; higher-LR comparison against L4 at `5e-4` |
-| Optimizer | T3 | AdamW at the selected LR | - | - | - | Planned; compares AdamW plus its default weight decay |
-| Scheduler | T4 | Step scheduler | - | - | - | Planned; fixed scheduled decay |
-| Scheduler | T5 | Plateau scheduler | - | - | - | Planned; validation-responsive decay |
-| Scheduler | T6 | Cosine scheduler | - | - | - | Planned; smooth decay |
+| Loss follow-up | L6 | L4 with `--balance_normalized` | **0.713** | 16.324 | **3.484** | **Selected loss**; best Dice and ASD, with HD95 `0.693 mm` above L4 |
+| Learning rate | T1 | L6 pipeline with Adam and LR `1e-4` | 0.668 | 18.255 | 4.270 | Completed; rejected, worse than L6 on all three metrics |
+| Learning rate | T2 | L6 pipeline with Adam and LR `1e-3` | 0.701 | **14.563** | 3.629 | Completed; best HD95, but lower Dice and worse ASD than L6 |
+| Optimizer | T3 | L6 pipeline at LR `5e-4` with AdamW instead of Adam | - | - | - | Next; compares AdamW including its default weight decay |
+| Scheduler | T4 | L6 pipeline with StepLR (`step_size=10`, `gamma=0.1`) | - | - | - | Next; fixed scheduled decay |
+| Scheduler | T5 | L6 pipeline with ReduceLROnPlateau (`patience=5`, `gamma=0.1`) | - | - | - | Next; validation-Dice-responsive decay |
+| Scheduler | T6 | L6 pipeline with CosineAnnealingLR (`T_max=25`) | - | - | - | Next; smooth decay |
 | Early stopping | T7 | Best setup with patience around 10 | - | - | - | Planned as an efficiency experiment |
 
 \* D3 failed to predict the esophagus for Patient 03. Its class-1 HD95 and ASD
@@ -47,11 +47,19 @@ class means. D3's reported distance averages are therefore optimistic.
   it improves macro Dice by `0.009`, HD95 by `7.823 mm`, and ASD by `0.354 mm`.
 - Loss-stage reference: P1 HU windowing, D1 augmentation, C2 five-slice 2.5D
   input, Adam, LR `5e-4`, no scheduler, and seed 43. C2 is plain-CE L0.
-- Loss-stage choice: L4 Balance is the best multi-metric trade-off. L3 DiceCE
-  has `0.004` higher macro Dice, but L4 lowers macro HD95 by `4.839 mm` and
-  ASD by `0.328 mm`. Pure Dice (L2) is clearly unsuitable in this setup.
-- Next comparisons: run L6 first; it changes only Balance normalization. If
-  L4 remains selected, run T1 and T2, changing only LR relative to L4 (`5e-4`).
-  If L6 wins, update the T1/T2 jobs to use normalized Balance before submitting
-  them. Choose the LR before running T3 optimizer and T4-T6 scheduler
-  comparisons. T7 early stopping comes after the training setup is selected.
+- Loss-stage choice: L6 normalized Balance improves macro Dice by `0.030` and
+  ASD by `0.303 mm` over L4, while HD95 worsens by `0.693 mm`. L4 remains the
+  best-HD95 alternative. Pure Dice (L2) is clearly unsuitable in this setup.
+- Learning-rate choice: keep `5e-4` from L6. T1 (`1e-4`) is worse on all three
+  metrics. T2 (`1e-3`) lowers HD95 by `1.761 mm` relative to L6, but lowers
+  Dice by `0.013` and raises ASD by `0.144 mm`. Retain T2 as an HD95-focused
+  alternative rather than combining it with other changes now.
+- Current reference: P1 HU windowing, D1 augmentation, C2 five-slice 2.5D,
+  L6 normalized Balance, Adam, LR `5e-4`, no scheduler, deterministic seed 43.
+- Next comparisons: T3 changes only optimizer; T4-T6 each change only the
+  scheduler. All can run concurrently against L6. If both an optimizer and a
+  scheduler improve results, validate their combination in a separate run.
+  T7 early stopping comes after the training setup is selected.
+- Selection is provisional: these comparisons use one seed and only five
+  validation patients. Confirm finalists across additional seeds or folds
+  before treating small differences as robust.
