@@ -1,7 +1,8 @@
 # Experiment plan and results
 
 Completed experiments use SegTHOR fold 0 (15 training patients, 5 validation
-patients) and deterministic seed 43. Reported results are unweighted macro
+patients). Training uses deterministic seed 43 except V1/V2, which reuse the
+same patient split with seeds 44/45. Reported results are unweighted macro
 averages over foreground classes 1-4. Higher Dice is better; lower HD95 and
 ASD are better.
 
@@ -30,17 +31,17 @@ ASD are better.
 | Scheduler | T4 | L6 pipeline with StepLR (`step_size=10`, `gamma=0.1`) | 0.691 | 17.806 | 3.925 | Completed; worse than L6 on all three metrics |
 | Scheduler | T5 | L6 pipeline with ReduceLROnPlateau (`patience=5`, `gamma=0.1`) | 0.696 | 14.967 | 3.717 | Completed; improves HD95 over L6, but T2 is better on all three metrics |
 | Scheduler | T6 | L6 pipeline with CosineAnnealingLR (`T_max=25`) | 0.700 | 16.521 | 3.751 | Completed; worse than L6 on all three metrics |
-| Early stopping | T7 | L6 with `--early_stopping_patience 10` | - | - | - | Next; efficiency check against the same 25-epoch reference |
-| Stability | V1 | L6 on the same fold-0 patient split with training seed 44 | - | - | - | Next; independent training-seed repeat, not a new validation fold |
-| Stability | V2 | L6 on the same fold-0 patient split with training seed 45 | - | - | - | Next; independent training-seed repeat, not a new validation fold |
+| Early stopping | T7 | L6 with `--early_stopping_patience 10` | 0.713 | 16.324 | 3.484 | Completed; same reported metrics as L6|
+| Stability | V1 | L6 on the same fold-0 patient split with training seed 44 | 0.684 | 17.239 | 3.940 | Completed; lower Dice and worse distances than seed 43 |
+| Stability | V2 | L6 on the same fold-0 patient split with training seed 45 | 0.701 | 17.131 | 3.750 | Completed;lower Dice and worse distances than seed 43 |
 
 \* D3 failed to predict the esophagus for Patient 03. Its class-1 HD95 and ASD
-were `NaN`, and the current evaluator omitted those values when computing the
-class means. D3's reported distance averages are therefore optimistic.
+were `NaN` so those values are ommited when computing the
+class means  (D3's reported distance averages are therefore optimistic)
 
 ## Stage decisions
 
-- Preprocessing winner: P1 fixed HU windowing.
+- Preprocessing winner: P1 fixed HU windowing
 - Data-handling winner: D1 augmentation. It has the best macro Dice and ASD,
   but its trachea HD95 regression must remain visible in later comparisons.
 - D4 confirms that adding aggressive empty-slice dropping to augmentation is
@@ -58,13 +59,11 @@ class means. D3's reported distance averages are therefore optimistic.
   alternative rather than combining it with other changes now.
 - Current reference: P1 HU windowing, D1 augmentation, C2 five-slice 2.5D,
   L6 normalized Balance, Adam, LR `5e-4`, no scheduler, deterministic seed 43.
-- Optimizer and scheduler choice: retain Adam and no scheduler. T3, T4, and T6
-  are worse than L6 on all three metrics. T5 reduces HD95 by `1.358 mm` but
-  worsens Dice and ASD; it is also dominated by T2, so no combination run is
-  justified by these results.
-- Next: T7 checks whether patience 10 saves epochs without losing the best
-  checkpoint. V1 and V2 repeat L6 with training seeds 44 and 45 on the same
-  P1 fold-0 split. These three jobs are independent and can run concurrently.
-- Selection is provisional: these comparisons use one seed and only five
-  validation patients. V1/V2 assess training-seed variability, not split
-  variability; repeat across folds before treating small differences as robust.
+- optimizer and schedulr choice: we retain Adam and no scheduler. T3, T4, and T6
+  are worse than L6 on all three metrics
+- Early stopping: T7 produced the same per-class results as L6
+- 3 seeds tested for stability on the fixed fold-0 split (L6, V1, V2): mean and
+  sample standard deviation of run-level macro metrics are Dice
+  `0.699 +/- 0.015`, HD95 `16.898 +/- 0.500 mm`, and ASD
+  `3.725 +/- 0.229 mm`
+- this selection is provisional before implementation of other model architectures 
