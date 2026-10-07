@@ -292,6 +292,17 @@ def slice_patient(
 
     if crop_body:
         row_sl, col_sl = compute_body_bbox(ct)
+        
+        if np.count_nonzero(gt[row_sl, col_sl]) != np.count_nonzero(gt):
+            raise ValueError(f"Body crop excludes annotated voxels")
+        
+        geometry_dir = dest_path / "geometry"
+        geometry_dir.mkdir(parents=True, exist_ok=True)
+        with open(geometry_dir / f"{id_}.json", "w") as f:
+            json.dump({
+                "original_shape": [x, y, z],
+                "crop_bbox": [int(row_sl.start), int(row_sl.stop), int(col_sl.start), int(col_sl.stop)],
+                "target_spacing": target_spacing}, f)
         ct = ct[row_sl, col_sl]
         gt = gt[row_sl, col_sl]
         x, y = ct.shape[0], ct.shape[1]

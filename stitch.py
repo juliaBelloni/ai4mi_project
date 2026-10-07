@@ -22,7 +22,9 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+from html import parser
 import re
+import json
 import argparse
 from itertools import repeat
 from pathlib import Path
@@ -41,7 +43,7 @@ def get_z(image: Path) -> int:
 
 
 def merge_patient(id_: str, dest_folder: str, images: list[Path],
-                  idxes: list[int], K: int, source_pattern: str) -> None:
+                  idxes: list[int], K: int, source_pattern: str, geometry_dir: Path = None) -> None:
     # print(source_pattern.format(id_=id_))
     orig_nib = nib.load(source_pattern.format(id_=id_))
     orig_shape = np.asarray(orig_nib.dataobj).shape
@@ -49,6 +51,22 @@ def merge_patient(id_: str, dest_folder: str, images: list[Path],
 
     X, Y, Z = orig_shape
     assert Z == len(idxes)
+    assert sorted(get_z(images[i]) for i in idxes) == list(range(Z))
+    row_sl, col_sl = slice(0, X), slice(0, Y)
+    
+    if geometry_dir is not None:
+        with open(Path(geometry_dir) / f"{id_}.json") as f:
+            geometry = json.load(f)
+        if geometry["original_shape"] != list(orig_shape):
+            raise ValueError(f"Geometry shape mismatch")
+        if geometry.get("target_spacing") is not None:
+            raise ValueError("Spacing resampling is not supported for reconstruction")
+        r0, r1, c0, c1 = geometry["crop_bbox"]
+        if not (0 <= r0 < r1 <= X and 0 <= c0 < c1 <= Y):
+            raise ValueError(f"Invalid crop bounds")
+        row_sl, col_sl = slice(r0, r1), slice(c0, c1)
+        
+    resize_shape = (row_sl.stop - row_sl.start, col_sl.stop - col_sl.start)
 
     res_arr: np.ndarray = np.zeros((X, Y, Z), dtype=np.int16)
 
@@ -60,20 +78,21 @@ def merge_patient(id_: str, dest_folder: str, images: list[Path],
         assert img_arr.dtype == np.uint8
         assert set(np.unique(img_arr)) <= set(range(K))
 
-        resized: np.ndarray = resize(img_arr, (X, Y),
+        resized: np.ndarray = resize(img_arr, resize_shape,
                                      mode="constant",
                                      preserve_range=True,
                                      anti_aliasing=False,
                                      order=0)
 
-        res_arr[:, :, z] = resized[...]
+        res_arr[row_sl, col_sl, z] = resized[...]
 
     assert set(np.unique(res_arr)) <= set(range(K))
     assert orig_shape == res_arr.shape, (orig_shape, res_arr.shape)
 
     # res_arr = res_arr.astype(np.int16)
+    assert set(np.unique(res_arr)) <= {0, 63, 126, 189, 252}
     res_arr //= 63  # For segthor only
-    assert set(np.unique(res_arr)) == set(range(5)), np.uint8(res_arr)
+    assert set(np.unique(res_arr)) <= set(range(5)), np.uint8(res_arr)
 
     new_nib = nib.nifti1.Nifti1Image(res_arr, affine=orig_nib.affine, header=orig_nib.header)
     nib.save(new_nib, (Path(dest_folder) / id_).with_suffix(".nii.gz"))
@@ -105,7 +124,7 @@ def main(args) -> None:
     args.dest_folder.mkdir(parents=True, exist_ok=True)
 
     for p in tqdm_(unique_patients):
-        merge_patient(p, args.dest_folder, images, idx_map[p], args.num_classes, args.source_scan_pattern)
+        merge_patient(p, args.dest_folder, images, idx_map[p], args.num_classes, args.source_scan_pattern, args.geometry_dir)
     # mmap_(lambda p: merge_patient(p, args.dest_folder, images, idx_map[p], K=args.num_classes), patients)
 
 
@@ -117,7 +136,7 @@ def get_args() -> argparse.Namespace:
                         help="The pattern to get the original scan. This is used to get the correct metadata")
     parser.add_argument('--dest_folder', type=Path, required=True)
     parser.add_argument('--grp_regex', type=str, required=True)
-
+    parser.add_argument('--geometry_dir', type=Path, help="Per-patient crop geometry")
     parser.add_argument('--num_classes', type=int, default=4)
 
     args = parser.parse_args()
