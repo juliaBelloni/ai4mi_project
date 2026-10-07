@@ -1,32 +1,38 @@
 # stage 1
 
-| ID | Parent | Exact change | Why this candidate / selection |
-|---|---|---|---|
-| P0 | R1 | Existing `--hu_min -1000 --hu_max 300` | Wide-window control; no new run. Retains low-HU airway context. |
-| P1 | R1 | `--hu_min -310 --hu_max 400` | Higher soft-tissue contrast per PNG level for mediastinal organs; check trachea performance after low-HU clipping. Core. |
-| P2 | R1 | `--clahe --hu_min -310 --hu_max 400` | Compare to P1 to isolate adaptive contrast. Existing implementation fixes clip limit 0.01; do not invent a CLI parameter sweep. Core. |
-| P3 | R1 | `--hu_windows -1000 300 -310 400` | Complementary wide/narrow information. Five slices x two windows = 10 channels, supported by U-Net. Wide window first also preserves DINO's established input. Core. |
+| ID | Parent | Exact change | Why this candidate / selection | Macro Dice ↑ | HD95 mm ↓ | ASD mm ↓ |
+|---|---|---|---|---:|---:|---:|
+| P0 | R1 | Existing `--hu_min -1000 --hu_max 300` | Wide-window control; no new run. Retains low-HU airway context. | 0.7765 | 14.884 | 3.407 |
+| P1 | R1 | `--hu_min -310 --hu_max 400` | Higher soft-tissue contrast per PNG level for mediastinal organs; check trachea performance after low-HU clipping. Core. | 0.7895 | 14.102 | 2.909 |
+| P2 | R1 | `--clahe --hu_min -310 --hu_max 400` | Compare to P1 to isolate adaptive contrast. Existing implementation fixes clip limit 0.01; do not invent a CLI parameter sweep. Core. | 0.7955 | 13.270 | 2.840 |
+| P3 | R1 | `--hu_windows -1000 300 -310 400` | Complementary wide/narrow information. Five slices x two windows = 10 channels, supported by U-Net. Wide window first also preserves DINO's established input. Core. | 0.7891 | 18.984 | 3.224 |
 
+
+Values are the unweighted mean of the four organ means in `results_new/*.csv`: `macro = (esophagus + heart + trachea + aorta) / 4`; background excluded. Each organ mean averages validation patients. 
+
+**P2 wins stage 1** on macro metrics
 
 # stage 2
 
 
-| ID | Parent | Exact change | Why / stop rule | Status |
-|---|---|---|---|---|
-| A0 | P_best | Existing rotation/noise `--augment`, scale 0 | Existing control. Rotation is +/-5 degrees, probability 0.5; Gaussian noise probability 0.25. | Reuse |
-| A1 | A0 | `--augment --augment_scale 0.15` | Modest shared zoom 0.85-1.15, probability 0.5. Check clipping after zoom; a scale sweep is unjustified. | Core: 1 |
-| A2 | Best(A0, A1) | Preprocessing `--crop_body` | CT-derived, one bounding box per volume. Potentially devotes more pixels to anatomy; preserve all organs and inverse geometry. If A1 failed, A2 uses A0, not A1. | Gated G2: 1 |
-| A3 | A2, only if both A1 and A2 were accepted | Set `--augment_scale 0`, keep old augmentation and crop | Tests whether zoom ceases to help or truncates anatomy after tighter cropping. | Conditional: 1 |
-| G1-resolution | Best available A configuration | Preprocessing `--shape 512 512`, no other change | Run only if esophagus/contour errors suggest information loss at 256 and memory profiling fits batch 8. This adds real image detail, unlike enlarging DINO's already-downsampled image. | Conditional: 1 |
+| ID | Parent | Exact change | Why / stop rule | Status | Macro Dice ↑ | HD95 mm ↓ | ASD mm ↓ |
+|---|---|---|---|---|---:|---:|---:|
+| A0 | P1 | Existing rotation/noise `--augment`, scale 0 | Existing control. Rotation is +/-5 degrees, probability 0.5; Gaussian noise probability 0.25. | Reuse | 0.7895 | 14.102 | 2.909 |
+| A1 | A0 (P1) | `--augment --augment_scale 0.15` | Modest shared zoom 0.85-1.15, probability 0.5. Check clipping after zoom; a scale sweep is unjustified. | Completed | 0.8086 | 14.476 | 2.731 |
+| A2 | A1 (P1) | Preprocessing `--crop_body` | Crop improves all three macro metrics; retain inverse geometry. | Completed; best complete recipe | 0.8343 | 9.461 | 2.116 |
+| A2-P2 | A2 | Add preprocessing `--clahe`; retain crop/window/scale | Test P2 contrast on the best complete recipe. | Ready; parallel | Pending | - | - |
+| A3 | A2 | Set `--augment_scale 0`, keep old augmentation and crop | Check whether scale still helps after cropping. | Ready; parallel | Pending | - | - |
+| G1-resolution | Best available A configuration | Preprocessing `--shape 512 512`, no other change | Run only if esophagus/contour errors suggest information loss at 256 and memory profiling fits batch 8. This adds real image detail, unlike enlarging DINO's already-downsampled image. | Conditional: 1 | Pending | - | - |
+
 
 
 # stage 3
 
 | ID | Parent | Change | Why / decision | Status |
 |---|---|---|---|---|
-| C0 | G_best | Existing `--context_slices 2` (five slices) | Incoming winner. Physical support is patient-dependent because z spacing is unchanged. | Reuse |
-| C1 | C0 | `--context_slices 0` | Recheck whether context still improves the stronger U-Net/updated inputs and warrants extra channels. | Core: 1 |
-| C2 | C0 | `--context_slices 1` (three slices) | Only if C0 and C1 are close, or five-slice input harms thin-organ endpoints. Earlier ENet failure alone does not prove it cannot work here. | Conditional: 1 |
+| C0 | A2 (P1, crop, scale 0.15) | Existing `--context_slices 2` (five slices) | Incoming winner. Physical support is patient-dependent because z spacing is unchanged. | Reuse |
+| C1 | C0 | `--context_slices 0` | Single-slice comparison on cropped A2. | Ready; parallel |
+| C2 | C0 | `--context_slices 1` (three slices) | Intermediate context; compare directly with C0 and C1 on A2. | Ready; parallel |
 
 
 # stage 4
@@ -42,14 +48,15 @@
 
 | ID | Parent | Change | Why / decision | Status |
 |---|---|---|---|---|
-| M0 | L_best | Existing `--model unet-large` | Best-supported accuracy control. | Reuse |
+| M0 | L_best | Existing `--model unet-small` | Stage 1-4 control. | Reuse |
+| M1 | M0 | `--model unet-large` | Matched small-versus-large comparison. | Core: 1 |
 
 
 # stage 6
 
 | ID | Parent | Exact change | Why / decision | Status |
 |---|---|---|---|---|
-| F0 | M0 | No foundation | Existing control. If P_best is CLAHE, use P_linear and create one matched no-foundation control for this branch; also retain the CLAHE winner in the overall shortlist. | Reuse or 1 bridge |
+| F0 | M_best | No foundation | Existing control. If P_best is CLAHE, use P_linear and create one matched no-foundation control for this branch; also retain the CLAHE winner in the overall shortlist. | Reuse or 1 bridge |
 | F3 | F0 | `--foundation_model meddinov3-vitb16 --foundation_fusion encoder --foundation_upsample 1` | Compare with no foundation. Requires linear HU mapping; CLAHE/min-max are invalid. | Core: 1 |
 | F4 | F3, if beneficial | Change only `--foundation_upsample 2`; keep projection width fixed | Tests a finer feature/fusion configuration. At 256 input: DINO input 512 and patch grid 32 x 32, fusion level 3 instead of 4. This changes both feature resolution and insertion level by design; do not claim a pure resolution ablation. | Conditional: 1 |
 | F5 | Best beneficial foundation row | Change only `--foundation_fusion decoder` | Only if encoder advantage is unclear or the preprocessing/backbone change reverses earlier behavior. | Conditional: 1 |
