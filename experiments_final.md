@@ -20,27 +20,29 @@ Values are the unweighted mean of the four organ means in `results_new/*.csv`: `
 | A0 | P1 | Existing rotation/noise `--augment`, scale 0 | Existing control. Rotation is +/-5 degrees, probability 0.5; Gaussian noise probability 0.25. | Reuse | 0.7895 | 14.102 | 2.909 |
 | A1 | A0 (P1) | `--augment --augment_scale 0.15` | Modest shared zoom 0.85-1.15, probability 0.5. Check clipping after zoom; a scale sweep is unjustified. | Completed | 0.8086 | 14.476 | 2.731 |
 | A2 | A1 (P1) | Preprocessing `--crop_body` | Crop improves all three macro metrics; retain inverse geometry. | Completed; best complete recipe | 0.8343 | 9.461 | 2.116 |
-| A2-P2 | A2 | Add preprocessing `--clahe`; retain crop/window/scale | Test P2 contrast on the best complete recipe. | Ready; parallel | Pending | - | - |
-| A3 | A2 | Set `--augment_scale 0`, keep old augmentation and crop | Check whether scale still helps after cropping. | Ready; parallel | Pending | - | - |
+| A2-P2 | A2 | Add preprocessing `--clahe`; retain crop/window/scale | Test P2 contrast on the best complete recipe. | Completed; retain A2 | 0.8308 | 10.447 | 2.243 |
+| A3 | A2 | Set `--augment_scale 0`, keep old augmentation and crop | Check whether scale still helps after cropping. | Completed; retain A2 | 0.8102 | 12.132 | 2.659 |
 | G1-resolution | Best available A configuration | Preprocessing `--shape 512 512`, no other change | Run only if esophagus/contour errors suggest information loss at 256 and memory profiling fits batch 8. This adds real image detail, unlike enlarging DINO's already-downsampled image. | Conditional: 1 | Pending | - | - |
 
 
 
 # stage 3
 
-| ID | Parent | Change | Why / decision | Status |
-|---|---|---|---|---|
-| C0 | A2 (P1, crop, scale 0.15) | Existing `--context_slices 2` (five slices) | Incoming winner. Physical support is patient-dependent because z spacing is unchanged. | Reuse |
-| C1 | C0 | `--context_slices 0` | Single-slice comparison on cropped A2. | Ready; parallel |
-| C2 | C0 | `--context_slices 1` (three slices) | Intermediate context; compare directly with C0 and C1 on A2. | Ready; parallel |
+| ID | Parent | Change | Why / decision | Status | Macro Dice ↑ | HD95 mm ↓ | ASD mm ↓ |
+|---|---|---|---|---|---:|---:|---:|
+| C0 | A2 (P1, crop, scale 0.15) | Existing `--context_slices 2` (five slices) | Incoming winner. Physical support is patient-dependent because z spacing is unchanged. | Reuse | 0.8343 | 9.461 | 2.116 |
+| C1 | C0 | `--context_slices 0` | Single-slice comparison on cropped A2. | Completed; retain C0 | 0.8288 | 10.638 | 2.388 |
+| C2 | C0 | `--context_slices 1` (three slices) | Intermediate context; compare directly with C0 and C1 on A2. | Completed; retain C0 | 0.8273 | 9.686 | 2.279 |
 
+
+A2 = C0 remains best on all three macro metrics: linear HU [-310, 400], crop, scale 0.15, five slices. All new CSV NaN counts are zero. Run L2 and M1 independently against A2; test large + DiceCE only if both improve. L3 and G1 remain conditional.
 
 # stage 4
 
 | ID | Parent | Exact change | Why / decision | Status |
 |---|---|---|---|---|
-| L0 | C_best | Binary Balance, normalization none, alpha 0.5, t 0.9, fallback 12 | Supported by larger-data N8; incoming control. | Reuse |
-| L2 | L0 | `--loss_fn dicece --dicece_lambda 0.5`, no CE weights | Strong simpler alternative to Balance on a new architecture/data representation. Clear inherited Balance flags in the recorded config. | Core: 1 |
+| L0 | A2 = C0 | Binary Balance, normalization none, alpha 0.5, t 0.9, fallback 12 | Best complete recipe; no new run. | Reuse |
+| L2 | L0 | `--loss_fn dicece --dicece_lambda 0.5`, no CE weights | Change loss only; keep U-Net-small. | Ready; parallel with M1 |
 | L3 | L2 | `--ce_weights invfreq --ce_weights_alpha 0.5` | Only if L2 is competitive but persistently undersegments esophagus. Moderate training-only inverse-frequency weighting; reject if false positives/surface errors grow as in old weighted CE. | Conditional: 1 |
 
 
@@ -48,8 +50,8 @@ Values are the unweighted mean of the four organ means in `results_new/*.csv`: `
 
 | ID | Parent | Change | Why / decision | Status |
 |---|---|---|---|---|
-| M0 | L_best | Existing `--model unet-small` | Stage 1-4 control. | Reuse |
-| M1 | M0 | `--model unet-large` | Matched small-versus-large comparison. | Core: 1 |
+| M0 | A2 = L0 | Existing `--model unet-small`, Balance loss | Matched control for M1. | Reuse |
+| M1 | M0 | `--model unet-large` | Change model only; retain Balance while L2 runs. | Ready; parallel with L2 |
 
 
 # stage 6
