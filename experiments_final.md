@@ -19,7 +19,7 @@ Values are the unweighted mean of the four organ means in `results_new/*.csv`: `
 |---|---|---|---|---|---:|---:|---:|
 | A0 | P1 | Existing rotation/noise `--augment`, scale 0 | Existing control. Rotation is +/-5 degrees, probability 0.5; Gaussian noise probability 0.25. | Reuse | 0.7895 | 14.102 | 2.909 |
 | A1 | A0 (P1) | `--augment --augment_scale 0.15` | Modest shared zoom 0.85-1.15, probability 0.5. Check clipping after zoom; a scale sweep is unjustified. | Completed | 0.8086 | 14.476 | 2.731 |
-| A2 | A1 (P1) | Preprocessing `--crop_body` | Crop improves all three macro metrics; retain inverse geometry. | Completed; best complete recipe | 0.8343 | 9.461 | 2.116 |
+| A2 | A1 (P1) | Preprocessing `--crop_body` | Crop improves all three macro metrics; retain inverse geometry. | Completed; selected stage 2 | 0.8343 | 9.461 | 2.116 |
 | A2-P2 | A2 | Add preprocessing `--clahe`; retain crop/window/scale | Test P2 contrast on the best complete recipe. | Completed; retain A2 | 0.8308 | 10.447 | 2.243 |
 | A3 | A2 | Set `--augment_scale 0`, keep old augmentation and crop | Check whether scale still helps after cropping. | Completed; retain A2 | 0.8102 | 12.132 | 2.659 |
 | G1-resolution | Best available A configuration | Preprocessing `--shape 512 512`, no other change | Run only if esophagus/contour errors suggest information loss at 256 and memory profiling fits batch 8. This adds real image detail, unlike enlarging DINO's already-downsampled image. | Conditional: 1 | Pending | - | - |
@@ -35,33 +35,36 @@ Values are the unweighted mean of the four organ means in `results_new/*.csv`: `
 | C2 | C0 | `--context_slices 1` (three slices) | Intermediate context; compare directly with C0 and C1 on A2. | Completed; retain C0 | 0.8273 | 9.686 | 2.279 |
 
 
-A2 = C0 remains best on all three macro metrics: linear HU [-310, 400], crop, scale 0.15, five slices. All new CSV NaN counts are zero. Run L2 and M1 independently against A2; test large + DiceCE only if both improve. L3 and G1 remain conditional.
 
 # stage 4
 
-| ID | Parent | Exact change | Why / decision | Status |
-|---|---|---|---|---|
-| L0 | A2 = C0 | Binary Balance, normalization none, alpha 0.5, t 0.9, fallback 12 | Best complete recipe; no new run. | Reuse |
-| L2 | L0 | `--loss_fn dicece --dicece_lambda 0.5`, no CE weights | Change loss only; keep U-Net-small. | Ready; parallel with M1 |
-| L3 | L2 | `--ce_weights invfreq --ce_weights_alpha 0.5` | Only if L2 is competitive but persistently undersegments esophagus. Moderate training-only inverse-frequency weighting; reject if false positives/surface errors grow as in old weighted CE. | Conditional: 1 |
+| ID | Parent | Exact change | Why / decision | Status | Macro Dice ↑ | HD95 mm ↓ | ASD mm ↓ |
+|---|---|---|---|---|---:|---:|---:|
+| L0 | A2 = C0 | Binary Balance, normalization none, alpha 0.5, t 0.9, fallback 12 | Lowest small-model HD95/ASD; carry Balance forward. | Selected loss | 0.8343 | 9.461 | 2.116 |
+| L2 | L0 | `--loss_fn dicece --dicece_lambda 0.5`, no CE weights | Higher Dice; worse HD95/ASD than L0. | Completed; trade-off | 0.8554 | 12.266 | 2.194 |
+| L3 | L2 | `--ce_weights invfreq --ce_weights_alpha 0.5` | Versus L2: lower Dice, slightly lower HD95, higher ASD; retain Balance. | Completed; not selected | 0.8503 | 11.965 | 2.379 |
 
 
 # stage 5
 
-| ID | Parent | Change | Why / decision | Status |
-|---|---|---|---|---|
-| M0 | A2 = L0 | Existing `--model unet-small`, Balance loss | Matched control for M1. | Reuse |
-| M1 | M0 | `--model unet-large` | Change model only; retain Balance while L2 runs. | Ready; parallel with L2 |
+| ID | Parent | Change | Why / decision | Status | Macro Dice ↑ | HD95 mm ↓ | ASD mm ↓ |
+|---|---|---|---|---|---:|---:|---:|
+| M0 | A2 = L0 | Existing `--model unet-small`, Balance loss | Matched control for M1. | Reuse | 0.8343 | 9.461 | 2.116 |
+| M1 | M0 | `--model unet-large` | Improves all metrics versus M0; best surface distances, selected compromise versus M2. | Completed; selected | 0.8689 | 7.020 | 1.653 |
+| M2 | M1 | `--loss_fn dicece --dicece_lambda 0.5`, no CE weights | Highest Dice; versus M1: +0.0069 Dice, +2.855 mm HD95, +0.438 mm ASD. | Completed; Dice alternative | 0.8758 | 9.875 | 2.092 |
+
+
+Best config so far: linear HU [-310, 400], body cropping, rotation/noise + scale 0.15, five-slice context, large U-Net, Balance loss
 
 
 # stage 6
 
 | ID | Parent | Exact change | Why / decision | Status |
 |---|---|---|---|---|
-| F0 | M_best | No foundation | Existing control. If P_best is CLAHE, use P_linear and create one matched no-foundation control for this branch; also retain the CLAHE winner in the overall shortlist. | Reuse or 1 bridge |
-| F3 | F0 | `--foundation_model meddinov3-vitb16 --foundation_fusion encoder --foundation_upsample 1` | Compare with no foundation. Requires linear HU mapping; CLAHE/min-max are invalid. | Core: 1 |
-| F4 | F3, if beneficial | Change only `--foundation_upsample 2`; keep projection width fixed | Tests a finer feature/fusion configuration. At 256 input: DINO input 512 and patch grid 32 x 32, fusion level 3 instead of 4. This changes both feature resolution and insertion level by design; do not claim a pure resolution ablation. | Conditional: 1 |
-| F5 | Best beneficial foundation row | Change only `--foundation_fusion decoder` | Only if encoder advantage is unclear or the preprocessing/backbone change reverses earlier behavior. | Conditional: 1 |
+| F0 | M1 | No foundation; large U-Net + Balance | Selected stage-5 control; reuse existing metrics. | Reuse |
+| F1 | F0 | `--foundation_model meddinov3-vitb16 --foundation_fusion encoder --foundation_upsample 1` | Compare with no foundation. Requires linear HU mapping; CLAHE/min-max are invalid. | Ready; next run |
+| F2 | F1, if beneficial | Change only `--foundation_upsample 2`; keep projection width fixed | Tests a finer feature/fusion configuration. At 256 input: DINO input 512 and patch grid 32 x 32, fusion level 3 instead of 4. This changes both feature resolution and insertion level by design; do not claim a pure resolution ablation. | Conditional: 1 |
+| F3 | Best beneficial foundation row | Change only `--foundation_fusion decoder` | Only if encoder advantage is unclear or the preprocessing/backbone change reverses earlier behavior. | Conditional: 1 |
 
 # stage 7
 
