@@ -22,11 +22,12 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+import json
 import re
 import argparse
 from itertools import repeat
 from pathlib import Path
-from typing import Match, Pattern
+from typing import Match, Optional, Pattern
 
 import numpy as np
 import nibabel as nib
@@ -41,7 +42,8 @@ def get_z(image: Path) -> int:
 
 
 def merge_patient(id_: str, dest_folder: str, images: list[Path],
-                  idxes: list[int], K: int, source_pattern: str) -> None:
+                  idxes: list[int], K: int, source_pattern: str,
+                  crop_box: Optional[tuple[int, int, int, int]] = None) -> None:
     # print(source_pattern.format(id_=id_))
     orig_nib = nib.load(source_pattern.format(id_=id_))
     orig_shape = np.asarray(orig_nib.dataobj).shape
@@ -52,6 +54,19 @@ def merge_patient(id_: str, dest_folder: str, images: list[Path],
 
     res_arr: np.ndarray = np.zeros((X, Y, Z), dtype=np.int16)
 
+    # With --crop_body, the saved PNG only covers a sub-region of the native
+    # (X, Y) slice (resized to the training shape with a different, per-patient
+    # aspect ratio). Resizing it straight to (X, Y) -- the no-crop path below --
+    # would silently stretch that sub-region to fill the whole native canvas
+    # instead of placing it back at its true offset/size. When a crop_box is
+    # given (from slice_segthor.py's crop_boxes.json), undo that correctly:
+    # resize to the box's own (h, w) first, then paste into a zero canvas.
+    if crop_box is not None:
+        r0, r1, c0, c1 = crop_box
+        target_shape = (r1 - r0, c1 - c0)
+    else:
+        target_shape = (X, Y)
+
     for idx in idxes:
         img: Path = images[idx]
 
@@ -60,13 +75,16 @@ def merge_patient(id_: str, dest_folder: str, images: list[Path],
         assert img_arr.dtype == np.uint8
         assert set(np.unique(img_arr)) <= set(range(K))
 
-        resized: np.ndarray = resize(img_arr, (X, Y),
+        resized: np.ndarray = resize(img_arr, target_shape,
                                      mode="constant",
                                      preserve_range=True,
                                      anti_aliasing=False,
                                      order=0)
 
-        res_arr[:, :, z] = resized[...]
+        if crop_box is not None:
+            res_arr[r0:r1, c0:c1, z] = resized[...]
+        else:
+            res_arr[:, :, z] = resized[...]
 
     assert set(np.unique(res_arr)) <= set(range(K))
     assert orig_shape == res_arr.shape, (orig_shape, res_arr.shape)
@@ -102,10 +120,16 @@ def main(args) -> None:
     # print(idx_map)
     assert sum(len(idx_map[k]) for k in unique_patients) == len(images)
 
+    crop_boxes: dict[str, tuple[int, int, int, int]] = {}
+    if args.crop_boxes is not None:
+        with open(args.crop_boxes) as f:
+            crop_boxes = {k: tuple(v) for k, v in json.load(f).items()}
+
     args.dest_folder.mkdir(parents=True, exist_ok=True)
 
     for p in tqdm_(unique_patients):
-        merge_patient(p, args.dest_folder, images, idx_map[p], args.num_classes, args.source_scan_pattern)
+        merge_patient(p, args.dest_folder, images, idx_map[p], args.num_classes,
+                      args.source_scan_pattern, crop_boxes.get(p))
     # mmap_(lambda p: merge_patient(p, args.dest_folder, images, idx_map[p], K=args.num_classes), patients)
 
 
@@ -119,6 +143,13 @@ def get_args() -> argparse.Namespace:
     parser.add_argument('--grp_regex', type=str, required=True)
 
     parser.add_argument('--num_classes', type=int, default=4)
+    parser.add_argument('--crop_boxes', type=Path, default=None,
+                        help="Path to the crop_boxes.json saved by slice_segthor.py's "
+                        "--crop_body (<data_dir>/crop_boxes.json). When given, each "
+                        "patient's prediction/GT is resized to its saved box size and "
+                        "pasted at that offset instead of being stretched to fill the "
+                        "whole native volume. Required to get correct HD95/ASD for "
+                        "--crop_body runs; omit for non-cropped data.")
 
     args = parser.parse_args()
 

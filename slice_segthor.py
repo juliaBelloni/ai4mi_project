@@ -262,7 +262,7 @@ def slice_patient(
     fix_aorta_esophagus: bool = False,
     crop_body: bool = False,
     hu_windows: list[tuple[float, float]] | None = None,
-) -> tuple[float, float, float]:
+) -> tuple[float, float, float, tuple[int, int, int, int] | None]:
     id_path: Path = source_path / ("train" if not test_mode else "test") / id_
 
     ct_path: Path = (
@@ -290,11 +290,15 @@ def slice_patient(
     else:
         gt = np.zeros_like(ct, dtype=np.uint8)
 
+    crop_box: tuple[int, int, int, int] | None = None
     if crop_body:
         row_sl, col_sl = compute_body_bbox(ct)
         ct = ct[row_sl, col_sl]
         gt = gt[row_sl, col_sl]
         x, y = ct.shape[0], ct.shape[1]
+        # Saved so stitch.py can place each prediction back at its true native
+        # offset/size instead of stretching it to fill the whole native canvas.
+        crop_box = (row_sl.start, row_sl.stop, col_sl.start, col_sl.stop)
 
     # One normalized volume per HU window; without --hu_windows there is just one
     norm_cts: list[np.ndarray]
@@ -352,7 +356,7 @@ def slice_patient(
                 warnings.filterwarnings("ignore", category=UserWarning)
                 imsave(str(save_path / filename), data)
 
-    return dx, dy, dz
+    return dx, dy, dz, crop_box
 
 
 def compute_percentile_window(
@@ -445,6 +449,7 @@ def main(args: argparse.Namespace):
         print(f"  --hu_percentile window: [{args.hu_min:.1f}, {args.hu_max:.1f}]")
 
     resolution_dict: dict[str, tuple[float, float, float]] = {}
+    crop_box_dict: dict[str, tuple[int, int, int, int]] = {}
 
     split_ids: list[str]
     for mode, split_ids in zip(["train", "val"], [training_ids, validation_ids]):
@@ -465,22 +470,32 @@ def main(args: argparse.Namespace):
             crop_body=args.crop_body,
             hu_windows=args.hu_windows,
         )
-        resolutions: list[tuple[float, float, float]]
+        results: list[tuple[float, float, float, tuple[int, int, int, int] | None]]
         iterator = tqdm_(split_ids)
         match args.process:
             case 1:
-                resolutions = list(map(pfun, iterator))
+                results = list(map(pfun, iterator))
             case -1:
-                resolutions = Pool().map(pfun, iterator)
+                results = Pool().map(pfun, iterator)
             case _ as p:
-                resolutions = Pool(p).map(pfun, iterator)
+                results = Pool(p).map(pfun, iterator)
 
-        for key, val in zip(split_ids, resolutions):
-            resolution_dict[key] = val
+        for key, (dx, dy, dz, crop_box) in zip(split_ids, results):
+            resolution_dict[key] = (dx, dy, dz)
+            if crop_box is not None:
+                crop_box_dict[key] = crop_box
 
     with open(dest_path / "spacing.pkl", "wb") as f:
         pickle.dump(resolution_dict, f, pickle.HIGHEST_PROTOCOL)
         print(f"Saved spacing dictionnary to {f}")
+
+    if crop_box_dict:
+        # stitch.py reads this to un-distort --crop_body predictions back to
+        # their true native offset/size before scoring, instead of stretching
+        # them to fill the whole native canvas. See compute_body_bbox().
+        with open(dest_path / "crop_boxes.json", "w") as f:
+            json.dump(crop_box_dict, f, indent=2)
+            print(f"Saved crop box dictionnary to {f}")
 
     # main.py reads this to know the number of input channels
     with open(dest_path / PREPROCESSING_FILE, "w") as f:
