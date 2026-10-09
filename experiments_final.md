@@ -54,25 +54,28 @@ Values are the unweighted mean of the four organ means in `results_new/*.csv`: `
 | M2 | M1 | `--loss_fn dicece --dicece_lambda 0.5`, no CE weights | Highest Dice; versus M1: +0.0069 Dice, +2.855 mm HD95, +0.438 mm ASD. | Completed; Dice alternative | 0.8758 | 9.875 | 2.092 |
 
 
-Best config so far: linear HU [-310, 400], body cropping, rotation/noise + scale 0.15, five-slice context, large U-Net, Balance loss
+Best config so far: linear HU [-310, 400], body cropping, rotation/noise + scale 0.15, five-slice context, large U-Net, Balance loss; no foundation (M1). M2 remains the Dice-leading alternative.
 
 
 # stage 6
 
-| ID | Parent | Exact change | Why / decision | Status |
-|---|---|---|---|---|
-| F0 | M1 | No foundation; large U-Net + Balance | Selected stage-5 control; reuse existing metrics. | Reuse |
-| F1 | F0 | `--foundation_model meddinov3-vitb16 --foundation_fusion encoder --foundation_upsample 1` | Compare with no foundation. Requires linear HU mapping; CLAHE/min-max are invalid. | Ready; next run |
-| F2 | F1, if beneficial | Change only `--foundation_upsample 2`; keep projection width fixed | Tests a finer feature/fusion configuration. At 256 input: DINO input 512 and patch grid 32 x 32, fusion level 3 instead of 4. This changes both feature resolution and insertion level by design; do not claim a pure resolution ablation. | Conditional: 1 |
-| F3 | Best beneficial foundation row | Change only `--foundation_fusion decoder` | Only if encoder advantage is unclear or the preprocessing/backbone change reverses earlier behavior. | Conditional: 1 |
+| ID | Parent | Exact change | Why / decision | Status | Macro Dice ↑ | HD95 mm ↓ | ASD mm ↓ |
+|---|---|---|---|---|---:|---:|---:|
+| F0 | M1 | No foundation; large U-Net + Balance | Selected stage-5 control; reuse existing metrics. | Reuse | 0.8689 | 7.020 | 1.653 |
+| F1 | F0 | `--foundation_model meddinov3-vitb16 --foundation_fusion encoder --foundation_upsample 1` | Worse than M1 on all macro metrics; heart improves, other organs worsen. | Completed; not selected | 0.8644 | 9.864 | 1.808 |
+| F2 | F1, if beneficial | Change `--foundation_upsample 2`; Tests a finer feature/fusion config. At 256 input: DINO input 512 and patch grid 32 x 32, fusion level 3 instead of 4 | Skip; F1 not beneficial | - | - | - |
+| F3 | F1 settings; M1 promotion control | Change only `--foundation_fusion decoder`; retain upsample 1 | One fusion-placement test; adopt only if better than M1. | Completed; not selected | 0.8595 | 7.987 | 1.729 |
+
+
+Stage 6 selects M1 (no foundation model)
 
 # stage 7
 
 | ID | Parent | One controlled change | Trigger |
 |---|---|---|---|
-| X1 | Best foundation pipeline | Swap P_best/P_linear for the strongest complementary earlier **linear-HU** representation, keeping geometry fixed | Multiwindow versus single-window may change once DINO already supplies central-slice features; or narrow-window clipping may hurt MedDINO. Compare with the exact same foundation/model/loss. |
-| X2 | X1 winner or best foundation pipeline | Replace loss with the strongest competitive alternative from Stage 4 | Only when earlier Balance versus DiceCE differences were close or organ-specific errors changed after DINO. |
-| X3 | Current winner | Toggle context 0 versus 2, keeping all else fixed | Substitute for X2 if both context rows were close and DINO plausibly supplies enough context already. Not a third automatic run. |
+| X1 | M1 | Alternative linear-HU representation | Skip: no foundation selected |
+| X2 | M1 | Alternative loss | Covered by M2: retain Balance for lower surface errors; no duplicate run. |
+| X3 | M1 | `--context_slices 0`; keep large U-Net, Balance and all other settings | Ready: final context check after model-size change as C1/C0 were close on small U-Net |
 
 
 # stage 8
