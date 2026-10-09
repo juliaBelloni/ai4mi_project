@@ -63,7 +63,7 @@ Best config so far: linear HU [-310, 400], body cropping, rotation/noise + scale
 |---|---|---|---|---|---:|---:|---:|
 | F0 | M1 | No foundation; large U-Net + Balance | Selected stage-5 control; reuse existing metrics. | Reuse | 0.8689 | 7.020 | 1.653 |
 | F1 | F0 | `--foundation_model meddinov3-vitb16 --foundation_fusion encoder --foundation_upsample 1` | Worse than M1 on all macro metrics; heart improves, other organs worsen. | Completed; not selected | 0.8644 | 9.864 | 1.808 |
-| F2 | F1, if beneficial | Change `--foundation_upsample 2`; Tests a finer feature/fusion config. At 256 input: DINO input 512 and patch grid 32 x 32, fusion level 3 instead of 4 | Skip; F1 not beneficial | - | - | - |
+| F2 | F1, if beneficial | Change `--foundation_upsample 2`; Tests a finer feature/fusion config. At 256 input: DINO input 512 and patch grid 32 x 32, fusion level 3 instead of 4 | Conditional on beneficial F1. | Skip; F1 not beneficial | - | - | - |
 | F3 | F1 settings; M1 promotion control | Change only `--foundation_fusion decoder`; retain upsample 1 | One fusion-placement test; adopt only if better than M1. | Completed; not selected | 0.8595 | 7.987 | 1.729 |
 
 
@@ -71,27 +71,37 @@ Stage 6 selects M1 (no foundation model)
 
 # stage 7
 
-| ID | Parent | One controlled change | Trigger |
-|---|---|---|---|
-| X1 | M1 | Alternative linear-HU representation | Skip: no foundation selected |
-| X2 | M1 | Alternative loss | Covered by M2: retain Balance for lower surface errors; no duplicate run. |
-| X3 | M1 | `--context_slices 0`; keep large U-Net, Balance and all other settings | Ready: final context check after model-size change as C1/C0 were close on small U-Net |
+| ID | Parent | One controlled change | Trigger | Macro Dice ↑ | HD95 mm ↓ | ASD mm ↓ |
+|---|---|---|---|---:|---:|---:|
+| X1 | M1 | Alternative linear-HU representation | Skip: no foundation selected | - | - | - |
+| X2 | M1 | Alternative loss | Covered by M2: retain Balance for lower surface errors; no duplicate run. | - | - | - |
+| X3 | M1 | `--context_slices 0`; all else fixed | Completed; M1 wins all three macro metrics. | 0.8664 | 7.826 | 1.755 |
 
 
 # stage 8
 
-| ID | Input | Candidate settings | Reason and promotion rule |
-|---|---|---|---|
-| Q0 | Raw predictions | `--postprocessing none` | Always retain as control; postprocessing is optional, not a compulsory improvement. |
-| Q1 | Q0 | `--postprocessing largest_connected_components --top_k 1 --connectivity 26 --postprocessing_classes 2 3 4` | Conservative first component filter; leave esophagus untouched. Inspect whether valid tracheal/aortic fragments are removed. |
-| Q2 | Q0 | `--postprocessing anatomy_aware_filtering`; current JSON rules: connectivity 26; class 1 retains components >= 0.05 of its largest; classes 2/3/4 retain largest; absolute minimum 0; always keep largest | Direct comparison with Q1 isolates esophagus fragment removal. This is a size heuristic, not a complete anatomical model. |
-| Q3 | Q2 settings | Lower esophagus relative minimum from 0.05 to **0.01**, other settings unchanged | Conditional only if Q2 removes real esophageal fragments or is close to Q1. This is the single conservative threshold follow-up, not a large threshold grid. |
-| Q4 | Best Q0-Q3 | Append `fill_holes` for **heart only**, connectivity 6 | Only if inspection shows enclosed false-negative cavities consistent with the annotation definition. Avoid blanket filling of tubular organs. |
-| Q5 | Q0 | `--postprocessing closing --iterations 1 --connectivity 6 --postprocessing_classes 2` | Conditional alternative to Q4 for small heart-boundary gaps. Do not automatically stack hole filling and closing. |
-| Q6 | Q0 | `--postprocessing opening --iterations 1 --connectivity 6 --postprocessing_classes 2` **or** `--postprocessing salt_and_pepper --kernel_size 3 --postprocessing_classes 2` | Choose at most one from observed heart-boundary spurs/isolated noise that component filtering did not address. Otherwise skip; both can remove valid thin structures. |
-| Q7 | Native probabilities + original CT | `--postprocessing dense_crf`, current parameter values listed below | Gated G3. One candidate for persistent CT-aligned boundary errors. Reject if it erodes low-contrast esophagus or gives poor runtime/accuracy trade-off. |
-| Q8 | Same as Q7 | Spatial/bilateral weights **1.5/2.5** instead of 3/5, all else fixed | Conditional single follow-up if Q7 oversmooths but improves some boundaries. No arbitrary sigma/iteration grid. |
-| Q9 | Best useful CRF probabilities/labels | Winning CRF **first**, then accepted component policy, then heart-only Q4 if independently useful | Test only a justified combination. Compare with both its individual parents and Q0; do not combine every method. |
+M1 remains selected: large U-Net, Balance, five slices, linear HU [-310, 400], crop, scale 0.15, no foundation
+
+| ID | Input | Candidate settings | Status / purpose | Macro Dice ↑ | HD95 mm ↓ | ASD mm ↓ |
+|---|---|---|---|---:|---:|---:|
+| Q0 | M1 raw | No filtering | Completed; matches M1 exactly. | 0.8689 | 7.020 | 1.653 |
+| Q1 | Q0 | Largest component per class; k=1, connectivity 26, classes 2/3/4 | Completed; helps aorta, harms trachea. | 0.8691 | 7.153 | 1.652 |
+| Q2 | Q0 | Anatomy-aware config: relative minimum 0.05; esophagus may retain fragments; classes 2/3/4 capped at 1 | Completed; best macro Dice/ASD, but trachea HD95 worsens. | 0.8693 | 7.100 | 1.636 |
+| Q3 | Q0 | Q2 with esophagus relative minimum 0.01 | Deferred; current esophagus filtering improves all metrics. | - | - | - |
+| Q4 | Q0 | Fill holes; heart only, connectivity 6 | Completed; tiny heart improvement on all metrics. | 0.8690 | 7.004 | 1.652 |
+| Q5 | Q0 | Closing; heart only, 1 iteration, connectivity 6 | Completed; heart HD95/ASD worsen. | 0.8690 | 7.022 | 1.658 |
+| Q6 | Q0 | Opening; heart only, 1 iteration, connectivity 6 | Completed; heart HD95/ASD worsen. | 0.8690 | 7.026 | 1.660 |
+| Q6b | Q0 | Salt-and-pepper median; heart only, kernel 3 | Completed; heart ASD worsens. | 0.8691 | 7.016 | 1.659 |
+| Q7 | M1 probabilities + CT | Dense CRF; configured defaults, 5 iterations, spatial/bilateral weights 3/5 | Completed; harms overall result, helps aorta only. | 0.8396 | 12.810 | 2.319 |
+| Q8 | Q7 inputs | Spatial/bilateral weights 1.5/2.5 | Deferred; test saved aorta-only result first. | - | - | - |
+| Q9 | Best individual methods | Combine best 2-3; CRF first, then component filtering, then accepted morphology | See Q9a/Q9b; no full-organ CRF combination. | - | - | - |
+| Q10 | Q0 | Combined-foreground components; k=4, connectivity 26 | Completed; negligible improvement. | 0.8689 | 7.020 | 1.653 |
+| Q11 | Q0 | Remove per-class components smaller than 100 voxels, connectivity 26 | Completed; trachea surface errors worsen. | 0.8691 | 7.531 | 1.675 |
+| Q2a | Q0 | Q2 anatomy rules without class 3 | Ready; isolate removal of harmful trachea filtering. | Pending | - | - |
+| Q9a | Q0 | Q2a then Q4 heart hole-filling | Ready; combine improvements on different organs. | Pending | - | - |
+| Q7a | Q0 + saved Q7 | Transfer Q7 aorta only into raw background/aorta voxels; preserve classes 1/2/3 | Ready; test aorta benefit without other-organ damage. | Pending | - | - |
+| Q9b | Q0 + saved Q7 | Q7a, then Q2a, then Q4 | Ready; three-method interaction test; do not assume additive gains. | Pending | - | - |
+
 
 
 # stage 9
