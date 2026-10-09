@@ -51,11 +51,23 @@ def resize_probabilities(probabilities: np.ndarray, shape: tuple[int, int]) -> n
  
 def export_patient(patient_id: str, indices: list[int], dataset: SliceDataset,
                    model, device: torch.device, class_count: int, batch_size: int,
-                   image_pattern: str, probability_pattern: str) -> None:
+                   image_pattern: str, probability_pattern: str, geometry_dir: Path | None = None) -> None:
     source_image = nib.load(image_pattern.format(id_=patient_id))  
     
     x, y, z = source_image.shape 
-    probability_volume = np.zeros((x, y, z, class_count), dtype=np.float32) 
+    r0, r1, c0, c1 = 0, x, 0, y
+    if geometry_dir is not None:
+        geometry = json.loads((geometry_dir / f"{patient_id}.json").read_text())
+        if geometry["original_shape"] != list(source_image.shape):
+            raise ValueError(f"Geometry shape mismatch: {patient_id}")
+        if geometry.get("target_spacing") is not None:
+            raise ValueError("Spacing resampling is not supported for probability export")
+        r0, r1, c0, c1 = geometry["crop_bbox"]
+        if not (0 <= r0 < r1 <= x and 0 <= c0 < c1 <= y):
+            raise ValueError(f"Invalid crop bounds: {patient_id}")
+    probability_volume = np.zeros((x, y, z, class_count), dtype=np.float32)
+    probability_volume[..., 0] = 1.0
+    seen = set()
      
     loader = DataLoader(Subset(dataset, indices), batch_size=batch_size, shuffle=False, num_workers=0)  
 
@@ -63,9 +75,14 @@ def export_patient(patient_id: str, indices: list[int], dataset: SliceDataset,
         for data in loader:
             probabilities = F.softmax(model(data["images"].to(device)), dim=1).cpu().numpy()
             for slice_probabilities, stem in zip(probabilities, data["stems"]):
-                _, slice_index = patient_and_z(stem)
-                probability_volume[:, :, slice_index, :] = resize_probabilities(
-                    slice_probabilities, (x, y)) 
+                slice_patient, slice_index = patient_and_z(stem)
+                if slice_patient != patient_id or not 0 <= slice_index < z or slice_index in seen:
+                    raise ValueError(f"Invalid or duplicate slice: {stem}")
+                seen.add(slice_index)
+                probability_volume[r0:r1, c0:c1, slice_index, :] = resize_probabilities(
+                    slice_probabilities, (r1 - r0, c1 - c0))
+    if seen != set(range(z)):
+        raise ValueError(f"Missing slices: {patient_id}")
  
     destination = Path(probability_pattern.format(id_=patient_id))
     destination.parent.mkdir(parents=True, exist_ok=True)  
@@ -83,6 +100,9 @@ def main(args: argparse.Namespace) -> None:
     dataset_name = training_config["dataset"]
     saved_data_dir = training_config.get("data_dir")
     data_dir = args.data_dir or (Path(saved_data_dir) if saved_data_dir else Path("data") / dataset_name)
+    geometry_dir = args.geometry_dir
+    if geometry_dir is None and (data_dir / "val" / "geometry").is_dir():
+        geometry_dir = data_dir / "val" / "geometry"
     class_count = datasets_params[dataset_name]["K"]
     context_slices = int(training_config.get("context_slices", 0))
     
@@ -99,7 +119,7 @@ def main(args: argparse.Namespace) -> None:
     batch_size = datasets_params[dataset_name]["B"]
     for patient_id, indices in tqdm_(indices_by_patient.items()):
         export_patient( patient_id, indices, dataset, model, device, class_count, batch_size, 
-                       dense_crf_config["image_pattern"], dense_crf_config["probability_pattern"] )
+                       dense_crf_config["image_pattern"], dense_crf_config["probability_pattern"], geometry_dir )
 
 
 def get_args() -> argparse.Namespace:
@@ -112,6 +132,7 @@ def get_args() -> argparse.Namespace:
                         default=Path(__file__).with_name("postprocessing_config.json"))
     parser.add_argument("--data_dir", type=Path,
                         help="for override of processed data_dir saved in the training config.")
+    parser.add_argument("--geometry_dir", type=Path, help="Saved crop geometry; auto-detected in data_dir/val/geometry")
     parser.add_argument("--gpu", action="store_true")
     return parser.parse_args()
 
