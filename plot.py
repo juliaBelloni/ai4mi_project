@@ -49,7 +49,7 @@ def run(args: argparse.Namespace) -> None:
         ax.plot(epcs, y, label=f"{k=}", linewidth=1.5)
 
     if K > 2:
-        ax.plot(epcs, metrics.mean(axis=1).mean(axis=1), label="All classes", linewidth=3)
+        ax.plot(epcs, metrics[:, :, 1:].mean(axis=(1, 2)), label="Foreground mean", linewidth=3)
         ax.legend()
     else:
         ax.plot(epcs, metrics.mean(axis=1), linewidth=3)

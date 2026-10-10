@@ -34,6 +34,7 @@ COMBINATIONS = {
     "anatomy_safe_fill": ["anatomy_safe", "fill_holes"],
     "crf_aorta": ["crf_aorta"],
     "crf_aorta_anatomy_fill": ["crf_aorta", "anatomy_safe", "fill_holes"],
+    "crf_aorta_anatomy12_fill": ["crf_aorta", "anatomy12", "fill_holes"],
 }
 METHODS.update(dict.fromkeys(COMBINATIONS))
 METRICS = ["dice", "hausdorff_distance_95", "average_surface_distance"]
@@ -88,24 +89,39 @@ def transfer_crf_aorta(patients, output):
     return dest
 
 def main():
+    global RUN, DATA, SOURCE
     parser = argparse.ArgumentParser()
     parser.add_argument("--method", choices=METHODS, required=True)
     parser.add_argument("--prepare-only", action="store_true")
+    parser.add_argument("--run_dir", type=Path, default=RUN)
+    parser.add_argument("--data_dir", type=Path, default=DATA)
+    parser.add_argument("--source_dir", type=Path, default=SOURCE)
+    parser.add_argument("--reference_run", type=Path, help="Completed run supplying frozen postprocessing settings")
     args = parser.parse_args()
-    patients = check_inputs()
+    RUN, DATA, SOURCE = args.run_dir.resolve(), args.data_dir.resolve(), args.source_dir.resolve()
+    reference = args.reference_run.resolve() if args.reference_run else RUN
+    patients = [] if args.prepare_only else check_inputs()
     output = RUN / "postprocessing" / args.method
     output.mkdir(parents=True, exist_ok=True)
     config_path = output / "postprocessing_config.json"
     if args.prepare_only or not config_path.exists():
         config = json.loads((ROOT / "postprocessing_config.json").read_text())
+        if args.reference_run:
+            anatomy = reference / "postprocessing/anatomy_aware_filtering/postprocessing_config.json"
+            crf = reference / "postprocessing/dense_crf/postprocessing_config.json"
+            config["anatomy_aware_filtering"] = json.loads(anatomy.read_text())["anatomy_aware_filtering"]
+            config["dense_crf"] = json.loads(crf.read_text())["dense_crf"]
+            config["reference_run"] = str(reference)
         if args.method in COMBINATIONS:
             steps = COMBINATIONS[args.method]
-            if "anatomy_safe" in steps:
-                saved = RUN / "postprocessing/anatomy_aware_filtering/postprocessing_config.json"
+            if "anatomy_safe" in steps or "anatomy12" in steps:
+                saved = reference / "postprocessing/anatomy_aware_filtering/postprocessing_config.json"
                 config["anatomy_aware_filtering"] = json.loads(saved.read_text())["anatomy_aware_filtering"]
                 config["anatomy_aware_filtering"]["classes"].pop("3", None)
+                if "anatomy12" in steps:
+                    config["anatomy_aware_filtering"]["classes"].pop("4", None)
             if "crf_aorta" in steps:
-                saved = RUN / "postprocessing/dense_crf/postprocessing_config.json"
+                saved = reference / "postprocessing/dense_crf/postprocessing_config.json"
                 config["dense_crf"] = json.loads(saved.read_text())["dense_crf"]
             config["combination"] = {
                 "steps": steps,
@@ -126,7 +142,7 @@ def main():
         if "crf_aorta" in steps:
             pred_folder = transfer_crf_aorta(patients, output)
         processors = []
-        if "anatomy_safe" in steps:
+        if "anatomy_safe" in steps or "anatomy12" in steps:
             processors.append((partial(pp.anatomy_aware_filtering, config=config["anatomy_aware_filtering"]), ("spacing",)))
         if "fill_holes" in steps:
             processors.append((partial(pp.fill_holes, classes=[2], connectivity=6), ()))

@@ -173,6 +173,40 @@ def seed_worker(worker_id: int) -> None:
     random.seed(worker_seed)
 
 
+def make_optimizer(args: argparse.Namespace, net: nn.Module):
+    if args.weight_decay is None:
+        args.weight_decay = 0.01 if args.opt == "adamw" else 0.0
+    if args.opt == "adam":
+        cls = torch.optim.Adam
+    elif args.opt == "adamw":
+        cls = torch.optim.AdamW
+    else:
+        raise ValueError(f"Invalid optimizer {args.opt}")
+    return cls(net.parameters(), lr=args.lr, betas=(0.9, 0.999),
+               weight_decay=args.weight_decay)
+
+
+class DiceEarlyStopping:
+    """Track meaningful Dice improvements independently of best checkpoint."""
+    def __init__(self, patience: int, min_delta: float, min_epochs: int):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.min_epochs = min_epochs
+        self.best = -float("inf")
+        self.bad_epochs = 0
+
+    def step(self, dice: float, completed_epochs: int) -> bool:
+        if not np.isfinite(dice):
+            raise ValueError("Non-finite validation Dice")
+        if dice > self.best + self.min_delta:
+            self.best = dice
+            self.bad_epochs = 0
+        else:
+            self.bad_epochs += 1
+        return (self.patience > 0 and completed_epochs >= self.min_epochs
+                and self.bad_epochs >= self.patience)
+
+
 def make_scheduler(args: argparse.Namespace, optimizer):
     if args.scheduler == "none":
         return None
@@ -188,11 +222,13 @@ def make_scheduler(args: argparse.Namespace, optimizer):
             mode="max",
             factor=args.scheduler_gamma,
             patience=args.scheduler_patience,
+            min_lr=args.scheduler_min_lr,
         )
 
     if args.scheduler == "cosine":
         t_max = args.scheduler_t_max if args.scheduler_t_max > 0 else args.epochs
-        return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=t_max)
+        return torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=t_max, eta_min=args.scheduler_min_lr)
 
     raise ValueError(f"Invalid scheduler {args.scheduler}")
 
@@ -346,14 +382,7 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     net.init_weights()
     net.to(device)
 
-    lr = args.lr  # default is  lr = 0.0005
-
-    if args.opt == "adam":
-        optimizer = torch.optim.Adam(net.parameters(), lr=lr, betas=(0.9, 0.999))
-    elif args.opt == "adamw":
-        optimizer = torch.optim.AdamW(net.parameters(), lr=lr, betas=(0.9, 0.999))
-    else:
-        raise ValueError(f"Invalid optimizer {args.opt}")
+    optimizer = make_optimizer(args, net)
 
     # Dataset part
     B: int = datasets_params[args.dataset]["B"]
@@ -429,7 +458,9 @@ def runTraining(args):
 
     save_config(args)
     scheduler = make_scheduler(args, optimizer)
-    epochs_without_improvement = 0
+    early_stopping = DiceEarlyStopping(
+        args.early_stopping_patience, args.early_stopping_min_delta,
+        args.early_stopping_min_epochs)
 
     if args.mode == "full":
         idk = list(range(K))  # Supervise both background and foreground
@@ -488,11 +519,13 @@ def runTraining(args):
     log_loss_val: Tensor = torch.zeros((args.epochs, len(val_loader)))
     log_dice_val: Tensor = torch.zeros((args.epochs, len(val_loader.dataset), K))
 
-    best_dice: float = 0
+    log_lr = np.zeros((args.epochs, 1), dtype=np.float64)
+    best_dice: float = -float("inf")
     epochs_ran: int = 0
 
     for e in range(args.epochs):
         epochs_ran = e + 1
+        log_lr[e, 0] = optimizer.param_groups[0]["lr"]
         for m in ["train", "val"]:
             match m:
                 case "train":
@@ -579,19 +612,20 @@ def runTraining(args):
             loss_fn.on_epoch_end(e)
 
         # I save it at each epochs, in case the code crashes or I decide to stop it early
-        np.save(args.dest / "loss_tra.npy", log_loss_tra)
-        np.save(args.dest / "dice_tra.npy", log_dice_tra)
-        np.save(args.dest / "loss_val.npy", log_loss_val)
-        np.save(args.dest / "dice_val.npy", log_dice_val)
+        np.save(args.dest / "loss_tra.npy", log_loss_tra[:epochs_ran])
+        np.save(args.dest / "dice_tra.npy", log_dice_tra[:epochs_ran])
+        np.save(args.dest / "loss_val.npy", log_loss_val[:epochs_ran])
+        np.save(args.dest / "dice_val.npy", log_dice_val[:epochs_ran])
 
+        np.save(args.dest / "lr.npy", log_lr[:epochs_ran])
         current_dice: float = log_dice_val[e, :, 1:].mean().item()
-        improved = current_dice > best_dice + args.early_stopping_min_delta
+        should_stop = early_stopping.step(current_dice, epochs_ran)
+        improved = current_dice > best_dice
 
         if improved:
             message = f">>> Improved dice at epoch {e}: {best_dice:05.3f}->{current_dice:05.3f} DSC"
             print(message)
             best_dice = current_dice
-            epochs_without_improvement = 0
 
             with open(args.dest / "best_epoch.txt", "w") as f:
                 f.write(message)
@@ -603,9 +637,6 @@ def runTraining(args):
 
             torch.save(net, args.dest / "bestmodel.pkl")
             torch.save(net.state_dict(), args.dest / "bestweights.pt")
-        else:
-            epochs_without_improvement += 1
-
         if scheduler is not None:
             if args.scheduler == "plateau":
                 scheduler.step(current_dice)
@@ -615,12 +646,10 @@ def runTraining(args):
             current_lr = optimizer.param_groups[0]["lr"]
             print(f">>> Learning rate after epoch {e}: {current_lr:.3e}")
 
-        if (
-            args.early_stopping_patience > 0
-            and epochs_without_improvement >= args.early_stopping_patience
-        ):
+        if should_stop:
             print(
-                f">>> Early stopping after {epochs_without_improvement} epochs without improvement"
+                f">>> Early stopping after {early_stopping.bad_epochs} epochs "
+                "without a meaningful foreground Dice improvement"
             )
             break
 
@@ -889,6 +918,9 @@ def main():
         "--lr", default=0.0005, type=float, help="Learning rate used during training."
     )
     parser.add_argument(
+        "--weight_decay", type=float, default=None,
+        help="Weight decay; defaults preserve Adam=0 and AdamW=0.01.")
+    parser.add_argument(
         "--context_slices",
         default=0,
         type=int,
@@ -925,6 +957,9 @@ def main():
         help="T_max for --scheduler cosine. 0 means use --epochs.",
     )
     parser.add_argument(
+        "--scheduler_min_lr", type=float, default=0.0,
+        help="Minimum LR for cosine/plateau schedules.")
+    parser.add_argument(
         "--early_stopping_patience",
         default=0,
         type=int,
@@ -936,6 +971,9 @@ def main():
         type=float,
         help="Minimum validation Dice improvement needed to reset early stopping.",
     )
+    parser.add_argument(
+        "--early_stopping_min_epochs", type=int, default=0,
+        help="Minimum completed epochs before early stopping can terminate training.")
     parser.add_argument(
         "--deterministic",
         action="store_true",
@@ -983,6 +1021,15 @@ def main():
     )
 
     args = parser.parse_args()
+    if args.epochs < 1 or not np.isfinite(args.lr) or args.lr <= 0:
+        parser.error("--epochs and --lr must be positive")
+    if args.weight_decay is not None and (not np.isfinite(args.weight_decay) or args.weight_decay < 0):
+        parser.error("--weight_decay must be finite and nonnegative")
+    if not np.isfinite(args.scheduler_min_lr) or not 0 <= args.scheduler_min_lr <= args.lr:
+        parser.error("--scheduler_min_lr must be between zero and --lr")
+    if (args.early_stopping_patience < 0 or not 0 <= args.early_stopping_min_epochs <= args.epochs
+            or not np.isfinite(args.early_stopping_min_delta) or args.early_stopping_min_delta < 0):
+        parser.error("Invalid early-stopping patience, minimum epochs or minimum delta")
     if (args.hu_min is None) != (args.hu_max is None):
         parser.error("Supply --hu_min and --hu_max together")
     if not (0.0 <= args.drop_empty_slices <= 1.0):
